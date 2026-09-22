@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir --upgrade pip \
     --trusted-host files.pythonhosted.org
 
 # Copy backend source code (assuming build context is project root)
-COPY . .
+COPY . /app/backend
 
 # Create necessary directories
 RUN mkdir -p /app/uploads /app/logs /app/data && \
@@ -47,4 +47,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
-CMD sh -c "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers"
+CMD sh -c "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers"
