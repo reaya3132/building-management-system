@@ -107,8 +107,18 @@ async def _build_projects_list(db, projects) -> list[ProjectOut]:
             "monthly_price_per_apartment": float(project.monthly_price_per_apartment) if project.monthly_price_per_apartment else None,
             "address": project.address,
             "city": project.city,
-            "image_url": project.image_url,
-            "contract_file_url": project.contract_file_url,
+            # "image_url": project.image_url,
+            # "contract_file_url": project.contract_file_url,
+            "image_url": (
+                 S3Service().generate_presigned_url(project.image_url)
+                 if project.image_url
+                 else None
+                ),
+            "contract_file_url": (
+                  S3Service().generate_presigned_url(project.contract_file_url)
+                 if project.contract_file_url
+                 else None
+                ),
             "created_at": project.created_at,
             "total_value": float(getattr(project, 'total_value', 0.0)),
             "has_fund": fund is not None,
@@ -354,8 +364,19 @@ async def get_project(project_id: int, db: DBSessionDep, user = Depends(get_curr
         "monthly_price_per_apartment": float(project.monthly_price_per_apartment) if project.monthly_price_per_apartment else None,
         "address": project.address,
         "city": project.city,
-        "image_url": project.image_url,
-        "contract_file_url": project.contract_file_url,
+        # "image_url": project.image_url,
+        # "contract_file_url": project.contract_file_url,
+                    "image_url": (
+                 S3Service().generate_presigned_url(project.image_url)
+                 if project.image_url
+                 else None
+                ),
+            "contract_file_url": (
+                  S3Service().generate_presigned_url(project.contract_file_url)
+                 if project.contract_file_url
+                 else None
+                ),
+
         "created_at": project.created_at,
         "total_value": float(getattr(project, 'total_value', 0.0)),
         "has_fund": fund is not None,
@@ -732,8 +753,19 @@ async def get_project_full(
         "monthly_price_per_apartment": project.monthly_price_per_apartment,
         "address": project.address,
         "city": project.city,
-        "image_url": project.image_url,
-        "contract_file_url": project.contract_file_url,
+        # "image_url": project.image_url,
+        # "contract_file_url": project.contract_file_url,
+                    "image_url": (
+                 S3Service().generate_presigned_url(project.image_url)
+                 if project.image_url
+                 else None
+                ),
+            "contract_file_url": (
+                  S3Service().generate_presigned_url(project.contract_file_url)
+                 if project.contract_file_url
+                 else None
+                ),
+
         "created_at": project.created_at.isoformat() if project.created_at else None,
         "total_value": getattr(project, 'total_value', 0.0),
         "has_fund": fund_data is not None,
