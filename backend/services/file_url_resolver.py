@@ -28,26 +28,24 @@ def _content_disposition(filename: str) -> str:
 def resolve_stored_file_url(
     stored_path: str | None, *, download_filename: str | None = None
 ) -> str:
-    """Resolve a stored path to a browser-fetchable URL.
-
-    - empty → ``""``
-    - ``http(s)`` (S3) → a short-lived signed URL when a bucket is configured,
-      otherwise the raw URL. When ``download_filename`` is given, the signed URL
-      forces a download under that name instead of the opaque S3 key.
-    - an absolute local path (``/...``) → returned unchanged.
-    - a relative local path → served under ``/uploads/``.
-    """
+    """Resolve a stored file path to a browser-fetchable URL."""
     path = stored_path or ""
+
     if not path:
         return ""
-    if path.startswith("http://") or path.startswith("https://"):
-        if not settings.AWS_S3_BUCKET:
-            return path
-        if download_filename:
-            return get_s3_service().generate_presigned_url(
-                path, response_content_disposition=_content_disposition(download_filename)
-            )
-        return get_s3_service().generate_presigned_url(path)
+
+    # Absolute local path
     if path.startswith("/"):
         return path
-    return f"/uploads/{path}"
+
+    # S3 key
+    if not settings.AWS_S3_BUCKET:
+        return f"/uploads/{path}"
+
+    if download_filename:
+        return get_s3_service().generate_presigned_url(
+            path,
+            response_content_disposition=_content_disposition(download_filename),
+        )
+
+    return get_s3_service().generate_presigned_url(path)

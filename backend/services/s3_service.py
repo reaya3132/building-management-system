@@ -27,7 +27,6 @@ class S3Service:
             
         )
         self._bucket = settings.AWS_S3_BUCKET
-        self._base_url = settings.AWS_S3_BASE_URL.rstrip("/") if settings.AWS_S3_BASE_URL else None
 
     def _build_key(self, prefix: str, filename: str) -> str:
         filename = filename or ""
@@ -57,24 +56,14 @@ class S3Service:
         )
 
         except Exception as e:
-            print("S3 ERROR:", repr(e))
-            print("S3 RESPONSE:", repr(getattr(e, "response", None)))
-
-            if hasattr(e, "response"):
-                error = e.response.get("Error", {})
-                print("AWS Code:", error.get("Code"))
-                print("AWS Message:", error.get("Message"))
-
+            logger.error("העלאת קובץ ל-S3 נכשלה: %s", e, exc_info=True)
             raise
 
-        if self._base_url:
-         return f"{self._base_url}/{key}"
-
-        return f"https://{self._bucket}.s3.{settings.AWS_REGION}.amazonaws.com/{key}"
+        return key
 
     def generate_presigned_url(
         self,
-        file_url: str,
+        file_key: str,
         expires_in: int | None = None,
         response_content_disposition: str | None = None,
     ) -> str:
@@ -93,11 +82,9 @@ class S3Service:
         paths) or when signing fails, so a signing problem degrades one link
         instead of failing the whole response.
         """
-        print("=== GENERATE PRESIGNED URL CALLED ===")
-        print("file_url:", file_url),
-        key = self._url_to_key(file_url)
+        key = file_key
         if not key:
-            return file_url
+            return file_key
 
         ttl = expires_in if expires_in is not None else settings.AWS_S3_PRESIGNED_URL_TTL_SECONDS
         params = {"Bucket": self._bucket, "Key": key}
@@ -112,24 +99,12 @@ class S3Service:
             )
         except Exception as e:
             logger.error("יצירת קישור חתום ל-S3 נכשלה (key=%s): %s", key, e, exc_info=True)
-            return file_url
+            return file_key
 
-    def _url_to_key(self, file_url: str) -> str | None:
-        if not file_url:
-            return None
-        if self._base_url and file_url.startswith(self._base_url):
-            return file_url.replace(self._base_url + "/", "")
-        if f"https://{self._bucket}.s3." in file_url:
-            parts = file_url.split(f"https://{self._bucket}.s3.{settings.AWS_REGION}.amazonaws.com/")
-            if len(parts) > 1:
-                return parts[1]
-        return None
-
-    def delete_file(self, file_url: str) -> None:
+    def delete_file(self, file_key: str) -> None:
         """Delete a file from S3 given its URL"""
-        key = self._url_to_key(file_url)
+        key = file_key
         if not key:
-            # If we can't extract the key, try to use the file_path as-is (might be a relative path)
             # In this case, we can't delete from S3, so we'll just skip
             return
 
@@ -138,34 +113,67 @@ class S3Service:
         except Exception as e:
             logger.error("מחיקת קובץ מ-S3 נכשלה (key=%s): %s", key, e, exc_info=True)
 
-    def get_file_content(self, file_url: str) -> bytes | None:
-        """Get file content from S3 given its URL"""
-        key = self._url_to_key(file_url)
-        if not key:
-            # Assuming file_url might be the key itself if not full URL
-            key = file_url
-
-        try:
-            response = self._s3.get_object(Bucket=self._bucket, Key=key)
-            return response['Body'].read()
-        except Exception as e:
-            logger.error("הורדת קובץ מ-S3 נכשלה (key=%s): %s", key, e, exc_info=True)
+    def get_file_content(self, file_key: str) -> bytes | None:
+        if not file_key:
             return None
 
-    def copy_file(self, *, source_url: str, dest_prefix: str) -> str:
-        """Server-side copy of an existing S3 object to a new key under dest_prefix. Returns new URL."""
-        src_key = self._url_to_key(source_url)
-        if not src_key:
-            raise ValueError(f"Cannot extract S3 key from URL: {source_url}")
-        dest_key = self._build_key(dest_prefix, src_key)
+        try:
+            response = self._s3.get_object(
+            Bucket=self._bucket,
+            Key=file_key,
+            )
+            return response["Body"].read()
+
+        except Exception as e:
+            logger.error(
+            "הורדת קובץ מ-S3 נכשלה (key=%s): %s",
+            file_key,
+            e,
+            exc_info=True,
+            )
+            return None
+
+def copy_file(self, *, source_key: str, dest_prefix: str) -> str:
+    if not source_key:
+        raise ValueError("source_key is required")
+
+    dest_key = self._build_key(dest_prefix, source_key)
+
+    try:
         self._s3.copy_object(
             Bucket=self._bucket,
             Key=dest_key,
-            CopySource={"Bucket": self._bucket, "Key": src_key},
+            CopySource={
+                "Bucket": self._bucket,
+                "Key": source_key,
+            },
         )
-        if self._base_url:
-            return f"{self._base_url}/{dest_key}"
-        return f"https://{self._bucket}.s3.{settings.AWS_REGION}.amazonaws.com/{dest_key}"
+
+    except Exception as e:
+        logger.error(
+            "העתקת קובץ ב-S3 נכשלה (source_key=%s, dest_key=%s): %s",
+            source_key,
+            dest_key,
+            e,
+            exc_info=True,
+        )
+        raise
+
+    return dest_key
+    # def copy_file(self, *, source_url: str, dest_prefix: str) -> str:
+    #     """Server-side copy of an existing S3 object to a new key under dest_prefix. Returns new URL."""
+    #     src_key = self._url_to_key(source_url)
+    #     if not src_key:
+    #         raise ValueError(f"Cannot extract S3 key from URL: {source_url}")
+    #     dest_key = self._build_key(dest_prefix, src_key)
+    #     self._s3.copy_object(
+    #         Bucket=self._bucket,
+    #         Key=dest_key,
+    #         CopySource={"Bucket": self._bucket, "Key": src_key},
+    #     )
+    #     if self._base_url:
+    #         return f"{self._base_url}/{dest_key}"
+    #     return f"https://{self._bucket}.s3.{settings.AWS_REGION}.amazonaws.com/{dest_key}"
 
 
 
