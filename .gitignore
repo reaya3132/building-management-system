@@ -232,3 +232,6 @@ backend/uploads/
 .cursorrules
 *.ttf
 *.iml
+backend/certificates/
+certificates/
+*.crt
