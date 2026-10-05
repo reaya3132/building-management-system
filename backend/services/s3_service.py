@@ -24,6 +24,7 @@ class S3Service:
         self._s3 = session.client(
             "s3",
             config=Config(s3={"addressing_style": "virtual"}),
+            
         )
         self._bucket = settings.AWS_S3_BUCKET
         self._base_url = settings.AWS_S3_BASE_URL.rstrip("/") if settings.AWS_S3_BASE_URL else None
@@ -41,16 +42,34 @@ class S3Service:
         if content_type:
             extra_args["ContentType"] = content_type
 
-        self._s3.upload_fileobj(
+        # self._s3.upload_fileobj(
+        #     Fileobj=file_obj,
+        #     Bucket=self._bucket,
+        #     Key=key,
+        #     ExtraArgs=extra_args or None,
+        # )
+        try:
+             self._s3.upload_fileobj(
             Fileobj=file_obj,
             Bucket=self._bucket,
             Key=key,
             ExtraArgs=extra_args or None,
         )
 
+        except Exception as e:
+            print("S3 ERROR:", repr(e))
+            print("S3 RESPONSE:", repr(getattr(e, "response", None)))
+
+            if hasattr(e, "response"):
+                error = e.response.get("Error", {})
+                print("AWS Code:", error.get("Code"))
+                print("AWS Message:", error.get("Message"))
+
+            raise
+
         if self._base_url:
-            return f"{self._base_url}/{key}"
-        # Default S3 URL
+         return f"{self._base_url}/{key}"
+
         return f"https://{self._bucket}.s3.{settings.AWS_REGION}.amazonaws.com/{key}"
 
     def generate_presigned_url(
@@ -74,12 +93,15 @@ class S3Service:
         paths) or when signing fails, so a signing problem degrades one link
         instead of failing the whole response.
         """
+        print("=== GENERATE PRESIGNED URL CALLED ===")
+        print("file_url:", file_url),
         key = self._url_to_key(file_url)
         if not key:
             return file_url
 
         ttl = expires_in if expires_in is not None else settings.AWS_S3_PRESIGNED_URL_TTL_SECONDS
         params = {"Bucket": self._bucket, "Key": key}
+        
         if response_content_disposition:
             params["ResponseContentDisposition"] = response_content_disposition
         try:

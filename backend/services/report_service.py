@@ -21,6 +21,8 @@ import csv
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, NamedStyle
 from openpyxl.utils import get_column_letter
+from backend.services.s3_service import S3Service
+
 
 try:
     from openpyxl.chart import PieChart, BarChart, LineChart, Reference
@@ -1267,7 +1269,8 @@ class ReportService:
                     "city": project.city,
                     "relation_project": project.relation_project,
                     "is_parent_project": project.is_parent_project,
-                    "image_url": project.image_url,
+                    # "image_url": project.image_url,
+                    "image_url": (S3Service().generate_presigned_url(project.image_url)    if project.image_url    else None),
                     "is_active": project.is_active,
                     "manager_id": project.manager_id,
                     "created_at": project.created_at
