@@ -5,10 +5,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY certificates/root.cer /usr/local/share/ca-certificates/root.crt
-COPY certificates/network.cer /usr/local/share/ca-certificates/network.crt
-COPY certificates/netfree.crt /usr/local/share/ca-certificates/netfree.crt
-
 RUN update-ca-certificates
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
