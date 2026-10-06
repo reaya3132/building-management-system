@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from typing import List, Dict, Any
 from dateutil.relativedelta import relativedelta
 import hashlib
+import time
 
 from backend.models.transaction import Transaction
 from backend.models.category import Category
@@ -1222,6 +1223,7 @@ class ReportService:
         from sqlalchemy.orm import selectinload
         from backend.models.fund import Fund
         from backend.models.budget import Budget
+        start = time.perf_counter()
 
         # Get all active projects: regular, subprojects, and parent projects
         projects_query = select(Project).where(Project.is_active == True)
@@ -1708,6 +1710,10 @@ class ReportService:
         ).where(Transaction.project_id == project_id).order_by(Transaction.tx_date.desc())
         transactions_result = await self.db.execute(transactions_query)
         transactions = list(transactions_result.scalars().all())
+        print(
+    f"DASHBOARD SNAPSHOT TIME: "
+    f"{time.perf_counter() - start:.2f}s"
+)
 
         return [
             {
