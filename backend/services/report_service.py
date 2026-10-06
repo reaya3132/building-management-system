@@ -1258,6 +1258,24 @@ class ReportService:
         project_ids = []
         for project in projects:
             try:
+                if project.image_url:
+                    url_start = time.perf_counter()
+
+                    url = S3Service().generate_presigned_url(project.image_url)
+
+                    url_elapsed = time.perf_counter() - url_start
+
+                    print(
+                        f"===== S3 PRESIGNED URL ===== "
+                        f"project_id={project.id}, "
+                        f"time={url_elapsed:.3f}s"
+                     )
+
+                    print("S3 KEY:", project.image_url)
+                    print("PRESIGNED GENERATED:", bool(url))
+                else:
+                    url = None
+
                 project_dict = {
                     "id": project.id,
                     "name": project.name,
@@ -1273,13 +1291,14 @@ class ReportService:
                     "relation_project": project.relation_project,
                     "is_parent_project": project.is_parent_project,
                     # "image_url": project.image_url,
-                    "image_url": (S3Service().generate_presigned_url(project.image_url)    if project.image_url    else None),
+                    # "image_url": (S3Service().generate_presigned_url(project.image_url)    if project.image_url    else None),
                     # "image_url": None,
                     # "image_url": (
                     #     S3Service().generate_presigned_url(project.image_url)
                     #     if project.image_url and project.id == projects[0].id
                     #     else None
                     #     ),
+                    "image_url": url,
                     "is_active": project.is_active,
                     "manager_id": project.manager_id,
                     "created_at": project.created_at
