@@ -5,7 +5,6 @@ from datetime import date, timedelta
 from typing import List, Dict, Any
 from dateutil.relativedelta import relativedelta
 import hashlib
-import time
 
 from backend.models.transaction import Transaction
 from backend.models.category import Category
@@ -1214,8 +1213,6 @@ class ReportService:
     # ==================== END OPTIMIZED HELPER FUNCTIONS ====================
 
     async def get_dashboard_snapshot(self) -> Dict[str, Any]:
-        start_time = time.perf_counter()
-        print("===== DASHBOARD SNAPSHOT START =====")
         """Get comprehensive dashboard snapshot with real-time financial data
         
         OPTIMIZED: Fetches all transactions in ONE query and calculates everything in memory.
@@ -1260,20 +1257,7 @@ class ReportService:
         for project in projects:
             try:
                 if project.image_url:
-                    url_start = time.perf_counter()
-
                     url = s3_service.generate_presigned_url(project.image_url)
-
-                    url_elapsed = time.perf_counter() - url_start
-
-                    print(
-                        f"===== S3 PRESIGNED URL ===== "
-                        f"project_id={project.id}, "
-                        f"time={url_elapsed:.3f}s"
-                     )
-
-                    print("S3 KEY:", project.image_url)
-                    print("PRESIGNED GENERATED:", bool(url))
                 else:
                     url = None
 
@@ -1291,14 +1275,6 @@ class ReportService:
                     "city": project.city,
                     "relation_project": project.relation_project,
                     "is_parent_project": project.is_parent_project,
-                    # "image_url": project.image_url,
-                    # "image_url": (S3Service().generate_presigned_url(project.image_url)    if project.image_url    else None),
-                    # "image_url": None,
-                    # "image_url": (
-                    #     S3Service().generate_presigned_url(project.image_url)
-                    #     if project.image_url and project.id == projects[0].id
-                    #     else None
-                    #     ),
                     "image_url": url,
                     "is_active": project.is_active,
                     "manager_id": project.manager_id,
@@ -1673,8 +1649,6 @@ class ReportService:
                     "amount": amount,
                     "color": self._get_category_color(cat_name)
                 })
-        elapsed = time.perf_counter() - start_time
-        print(f"===== DASHBOARD SNAPSHOT END: {elapsed:.2f} seconds =====")
         return {
             "projects": projects_with_finance,
             "alerts": {
