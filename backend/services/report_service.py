@@ -1214,6 +1214,8 @@ class ReportService:
     # ==================== END OPTIMIZED HELPER FUNCTIONS ====================
 
     async def get_dashboard_snapshot(self) -> Dict[str, Any]:
+        start_time = time.perf_counter()
+        print("===== DASHBOARD SNAPSHOT START =====")
         """Get comprehensive dashboard snapshot with real-time financial data
         
         OPTIMIZED: Fetches all transactions in ONE query and calculates everything in memory.
@@ -1223,7 +1225,6 @@ class ReportService:
         from sqlalchemy.orm import selectinload
         from backend.models.fund import Fund
         from backend.models.budget import Budget
-        start = time.perf_counter()
 
         # Get all active projects: regular, subprojects, and parent projects
         projects_query = select(Project).where(Project.is_active == True)
@@ -1652,7 +1653,8 @@ class ReportService:
                     "amount": amount,
                     "color": self._get_category_color(cat_name)
                 })
-
+        elapsed = time.perf_counter() - start_time
+        print(f"===== DASHBOARD SNAPSHOT END: {elapsed:.2f} seconds =====")
         return {
             "projects": projects_with_finance,
             "alerts": {
@@ -1710,11 +1712,6 @@ class ReportService:
         ).where(Transaction.project_id == project_id).order_by(Transaction.tx_date.desc())
         transactions_result = await self.db.execute(transactions_query)
         transactions = list(transactions_result.scalars().all())
-        print(
-    f"DASHBOARD SNAPSHOT TIME: "
-    f"{time.perf_counter() - start:.2f}s"
-)
-
         return [
             {
                 "id": tx.id,
