@@ -1256,12 +1256,13 @@ class ReportService:
         # Pre-load ALL project data immediately to avoid lazy loading issues
         projects_data = []
         project_ids = []
+        s3_service = S3Service()
         for project in projects:
             try:
                 if project.image_url:
                     url_start = time.perf_counter()
 
-                    url = S3Service().generate_presigned_url(project.image_url)
+                    url = s3_service.generate_presigned_url(project.image_url)
 
                     url_elapsed = time.perf_counter() - url_start
 
