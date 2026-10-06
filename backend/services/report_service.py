@@ -1270,7 +1270,8 @@ class ReportService:
                     "relation_project": project.relation_project,
                     "is_parent_project": project.is_parent_project,
                     # "image_url": project.image_url,
-                    "image_url": (S3Service().generate_presigned_url(project.image_url)    if project.image_url    else None),
+                    # "image_url": (S3Service().generate_presigned_url(project.image_url)    if project.image_url    else None),
+                    "image_url": None,
                     "is_active": project.is_active,
                     "manager_id": project.manager_id,
                     "created_at": project.created_at
