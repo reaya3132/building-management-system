@@ -1253,6 +1253,7 @@ class ReportService:
         # Pre-load ALL project data immediately to avoid lazy loading issues
         projects_data = []
         project_ids = []
+        s3_service = S3Service()
         for project in projects:
             if project.image_url:
                 url = S3Service().generate_presigned_url(project.image_url)
@@ -1263,6 +1264,11 @@ class ReportService:
             else:
                 url = None
             try:
+                if project.image_url:
+                    url = s3_service.generate_presigned_url(project.image_url)
+                else:
+                    url = None
+
                 project_dict = {
                     "id": project.id,
                     "name": project.name,
@@ -1277,14 +1283,6 @@ class ReportService:
                     "city": project.city,
                     "relation_project": project.relation_project,
                     "is_parent_project": project.is_parent_project,
-                    # "image_url": project.image_url,
-                    # "image_url": (S3Service().generate_presigned_url(project.image_url)    if project.image_url    else None),
-                    # "image_url": None,
-                    # "image_url": (
-                    #     S3Service().generate_presigned_url(project.image_url)
-                    #     if project.image_url and project.id == projects[0].id
-                    #     else None
-                    #     ),
                     "image_url": url,
                     "is_active": project.is_active,
                     "manager_id": project.manager_id,
@@ -1659,7 +1657,6 @@ class ReportService:
                     "amount": amount,
                     "color": self._get_category_color(cat_name)
                 })
-
         return {
             "projects": projects_with_finance,
             "alerts": {
@@ -1717,7 +1714,6 @@ class ReportService:
         ).where(Transaction.project_id == project_id).order_by(Transaction.tx_date.desc())
         transactions_result = await self.db.execute(transactions_query)
         transactions = list(transactions_result.scalars().all())
-
         return [
             {
                 "id": tx.id,
