@@ -14,7 +14,15 @@ class UserRepository(BaseRepository[User]):
         return res.scalar_one_or_none()
 
     async def list(self) -> list[User]:
-        res = await self.db.execute(select(User))
+        """Return all users that were not moved to the archive (active and inactive)."""
+        res = await self.db.execute(select(User).where(User.archived_at.is_(None)))
+        return list(res.scalars().all())
+
+    async def list_archived(self) -> list[User]:
+        """Return archived users, most recently archived first."""
+        res = await self.db.execute(
+            select(User).where(User.archived_at.is_not(None)).order_by(User.archived_at.desc())
+        )
         return list(res.scalars().all())
 
     async def has_admin_user(self) -> bool:

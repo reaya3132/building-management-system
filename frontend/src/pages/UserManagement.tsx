@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppSelector } from '../utils/hooks'
 import { fetchMe } from '../store/slices/authSlice'
 import api, { avatarUrl } from '../lib/api'
+import ArchiveUserModal from '../components/ArchiveUserModal'
 
 const DEFAULT_CALENDAR_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16']
 
@@ -16,7 +17,16 @@ interface User {
   created_at: string
   calendar_color?: string | null
   avatar_url?: string | null
+  phone?: string | null
 }
+
+interface ArchivedUser extends User {
+  archived_at: string
+  last_login?: string | null
+}
+
+const formatDate = (value?: string | null) =>
+  value ? new Date(value).toLocaleDateString('he-IL') : '—'
 
 export default function UserManagement() {
   const dispatch = useAppDispatch()
@@ -28,6 +38,10 @@ export default function UserManagement() {
   const [showAddUser, setShowAddUser] = useState(false)
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const [showArchive, setShowArchive] = useState(false)
+  const [archivedUsers, setArchivedUsers] = useState<ArchivedUser[]>([])
+  const [archiveTarget, setArchiveTarget] = useState<Pick<User, 'id' | 'full_name'> | null>(null)
+  const [archiving, setArchiving] = useState(false)
   const avatarInputRef = useRef<HTMLInputElement>(null)
 
   // Add user form state
@@ -114,23 +128,45 @@ export default function UserManagement() {
     }
   }
 
-  const handleDeleteUser = async (userId: number, userName: string) => {
-    if (!confirm(`האם אתה בטוח שברצונך למחוק את המשתמש ${userName}? פעולה זו אינה ניתנת לביטול.`)) {
-      return
-    }
-
-    setError(null)
+  const fetchArchivedUsers = async () => {
     setLoading(true)
     try {
-      await api.delete(`/users/${userId}`)
-      await fetchUsers() // Refresh the list
-      alert('משתמש נמחק בהצלחה')
+      const response = await api.get('/users/archived')
+      setArchivedUsers(response.data)
     } catch (err: any) {
-      const errorMessage = err.response?.data?.detail || err.message || 'Failed to delete user'
-      setError(errorMessage)
-      alert(`שגיאה במחיקת המשתמש: ${errorMessage}`)
+      setError(err.response?.data?.detail || err.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const toggleArchive = async () => {
+    setError(null)
+    if (showArchive) {
+      setShowArchive(false)
+      await fetchUsers()
+    } else {
+      setShowArchive(true)
+      await fetchArchivedUsers()
+    }
+  }
+
+  const handleArchiveUser = async (userId: number) => {
+    setError(null)
+    setArchiving(true)
+    setLoading(true)
+    try {
+      await api.post(`/users/${userId}/archive`)
+      await fetchUsers() // Refresh the list
+      alert('המשתמש הועבר לארכיון בהצלחה')
+    } catch (err: any) {
+      const errorMessage = err.response?.data?.detail || err.message || 'Failed to archive user'
+      setError(errorMessage)
+      alert(`שגיאה בהעברת המשתמש לארכיון: ${errorMessage}`)
+    } finally {
+      setLoading(false)
+      setArchiving(false)
+      setArchiveTarget(null)
     }
   }
 
@@ -199,18 +235,40 @@ export default function UserManagement() {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-6">
       <div className="max-w-7xl mx-auto">
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6">
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
             <div>
-              <h1 className="text-2xl font-bold text-gray-900 dark:text-white">ניהול משתמשים</h1>
-              <p className="text-gray-600 dark:text-gray-400 mt-1">ניהול משתמשי המערכת והרשאות</p>
+              <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+                {showArchive ? 'ארכיון משתמשים' : 'ניהול משתמשים'}
+              </h1>
+              <p className="text-gray-600 dark:text-gray-400 mt-1">
+                {showArchive ? 'משתמשים שהועברו לארכיון - אין להם גישה למערכת' : 'ניהול משתמשי המערכת והרשאות'}
+              </p>
             </div>
-            <button
-              onClick={() => setShowAddUser(true)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              הוסף משתמש
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={toggleArchive}
+                className="px-4 py-2 bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-100 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+              >
+                {showArchive ? 'חזרה למשתמשים' : 'ארכיון'}
+              </button>
+              {!showArchive && (
+                <button
+                  onClick={() => setShowAddUser(true)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  הוסף משתמש
+                </button>
+              )}
+            </div>
           </div>
+
+          <ArchiveUserModal
+            open={archiveTarget !== null}
+            userName={archiveTarget?.full_name ?? ''}
+            loading={archiving}
+            onClose={() => setArchiveTarget(null)}
+            onConfirm={() => archiveTarget && handleArchiveUser(archiveTarget.id)}
+          />
 
           {/* Edit User Modal */}
           {editingUser && (
@@ -401,7 +459,65 @@ export default function UserManagement() {
             </div>
           )}
 
-          {/* Users List */}
+          {showArchive ? (
+          /* Archived Users List (read-only) */
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">תמונה</th>
+                  <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">שם מלא</th>
+                  <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">אימייל</th>
+                  <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">טלפון</th>
+                  <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">תפקיד</th>
+                  <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">נוצר בתאריך</th>
+                  <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">התחברות אחרונה</th>
+                  <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">הועבר לארכיון</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr>
+                    <td colSpan={8} className="text-center py-8 text-gray-500 dark:text-gray-400">
+                      טוען ארכיון...
+                    </td>
+                  </tr>
+                ) : archivedUsers.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="text-center py-8 text-gray-500 dark:text-gray-400">
+                      אין משתמשים בארכיון
+                    </td>
+                  </tr>
+                ) : (
+                  archivedUsers.map((user) => (
+                    <tr key={user.id} className="border-b border-gray-200 dark:border-gray-700">
+                      <td className="py-3 px-4">
+                        {avatarUrl(user.avatar_url) ? (
+                          <img src={avatarUrl(user.avatar_url)!} alt="" className="w-8 h-8 rounded-full object-cover border border-gray-300 dark:border-gray-600 grayscale" />
+                        ) : (
+                          <span
+                            className="inline-flex w-8 h-8 rounded-full items-center justify-center text-xs font-medium text-white bg-gray-400 border border-gray-300 dark:border-gray-600"
+                            title={user.full_name}
+                          >
+                            {user.full_name?.charAt(0) || '?'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-sm text-gray-900 dark:text-white">{user.full_name}</td>
+                      <td className="py-3 px-4 text-sm text-gray-900 dark:text-white">{user.email}</td>
+                      <td className="py-3 px-4 text-sm text-gray-900 dark:text-white whitespace-nowrap">{user.phone || '—'}</td>
+                      <td className="py-3 px-4 text-sm text-gray-900 dark:text-white">{user.role === 'Admin' ? 'מנהל' : 'משתמש'}</td>
+                      <td className="py-3 px-4 text-sm text-gray-900 dark:text-white whitespace-nowrap">{formatDate(user.created_at)}</td>
+                      <td className="py-3 px-4 text-sm text-gray-900 dark:text-white whitespace-nowrap">{formatDate(user.last_login)}</td>
+                      <td className="py-3 px-4 text-sm text-gray-900 dark:text-white whitespace-nowrap">{formatDate(user.archived_at)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          ) : (
+          /* Users List */
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
@@ -487,13 +603,15 @@ export default function UserManagement() {
                           >
                             הרשאות
                           </button>
-                          <button
-                            onClick={() => handleDeleteUser(user.id, user.full_name)}
-                            className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 text-sm font-medium px-3 py-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-                            title="מחק משתמש"
-                          >
-                            מחק
-                          </button>
+                          {user.id !== me.id && (
+                            <button
+                              onClick={() => setArchiveTarget({ id: user.id, full_name: user.full_name })}
+                              className="text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300 text-sm font-medium px-3 py-1 rounded hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors whitespace-nowrap"
+                              title="העבר משתמש לארכיון"
+                            >
+                              העבר לארכיון
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -502,6 +620,7 @@ export default function UserManagement() {
               </tbody>
             </table>
           </div>
+          )}
 
           {error && (
             <div className="mt-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">

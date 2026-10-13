@@ -258,13 +258,14 @@ async def reset_password(db: DBSessionDep, reset_data: PasswordReset):
     
     auth_service = AuthService(db)
     user = await auth_service.get_user_by_email(email)
-    
-    if not user:
+
+    # Inactive/archived accounts get the same response as unknown ones
+    if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User not found"
         )
-    
+
     await auth_service.update_password(user.id, reset_data.new_password)
     return {"message": "Password updated successfully"}
 
@@ -295,7 +296,8 @@ async def reset_password_with_token(
         if email:
             user = await auth_service.get_user_by_email(email)
 
-    if not user:
+    # Inactive/archived accounts get the same response as an invalid token
+    if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired token"
