@@ -1,24 +1,16 @@
 import os
 from io import BytesIO
-from sqlalchemy import update, delete
 from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
 
 from backend.core.deps import DBSessionDep, get_current_user, require_roles
 from backend.iam.decorators import require_permission
 from backend.core.config import settings
 from backend.repositories.user_repository import UserRepository
-from backend.schemas.user import UserOut, UserUpdate, CalendarSettingsUpdate, ProfileUpdate
+from backend.schemas.user import UserOut, ArchivedUserOut, UserUpdate, CalendarSettingsUpdate, ProfileUpdate
 from backend.models.user import UserRole
 from backend.core.security import hash_password
 from backend.services.audit_service import AuditService
-from backend.models.project import Project
-from backend.models.transaction import Transaction
-from backend.models.recurring_transaction import RecurringTransactionTemplate
-from backend.models.contract_period import ContractPeriod
-from backend.models.audit_log import AuditLog
-from backend.models.invite import Invite
-from backend.models.task import Task
-from backend.models.user_notification import UserNotification
+from backend.services.user_archive_service import UserArchiveService, is_super_admin
 
 router = APIRouter()
 
@@ -152,6 +144,12 @@ async def list_users(db: DBSessionDep, user = Depends(require_permission("read",
     return await UserRepository(db).list()
 
 
+@router.get("/archived", response_model=list[ArchivedUserOut])
+async def list_archived_users(db: DBSessionDep, user = Depends(require_permission("read", "user", project_id_param=None))):
+    """List users that were moved to the archive, with their full details"""
+    return await UserArchiveService(db).list_archived()
+
+
 @router.get("/profile", response_model=UserOut)
 async def get_user_profile(db: DBSessionDep, current_user = Depends(get_current_user)):
     """Get current user profile"""
@@ -246,7 +244,21 @@ async def update_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
+    # Archived users are read-only (prevents re-activating them via is_active)
+    if user.archived_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Archived users cannot be edited"
+        )
+
+    # The super admin must never be locked out
+    if user_data.is_active is False and is_super_admin(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The super admin cannot be deactivated"
+        )
+
     # Store old values for audit log
     old_values = {
         'full_name': user.full_name,
@@ -300,91 +312,7 @@ async def update_user(
     return updated_user
 
 
-@router.delete("/{user_id}")
-async def delete_user(user_id: int, db: DBSessionDep, current_admin = Depends(require_permission("delete", "user", resource_id_param="user_id", project_id_param=None))):
-    """Delete user"""
-    user_repo = UserRepository(db)
-    
-    # Check if user exists
-    user = await user_repo.get_by_id(user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Prevent admin from deleting themselves
-    if user_id == current_admin.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You cannot delete yourself"
-        )
-    
-    # Store user details for audit log
-    user_details = {'email': user.email, 'full_name': user.full_name}
-    
-    # Cleanup dependencies
-    # 1. Nullify Project manager
-    await db.execute(
-        update(Project)
-        .where(Project.manager_id == user_id)
-        .values(manager_id=None)
-    )
-
-    # 2. Nullify Transaction creator
-    await db.execute(
-        update(Transaction)
-        .where(Transaction.created_by_user_id == user_id)
-        .values(created_by_user_id=None)
-    )
-
-    # 3. Nullify RecurringTransactionTemplate creator
-    await db.execute(
-        update(RecurringTransactionTemplate)
-        .where(RecurringTransactionTemplate.created_by_user_id == user_id)
-        .values(created_by_user_id=None)
-    )
-
-    # 4. Nullify ContractPeriod archiver
-    await db.execute(
-        update(ContractPeriod)
-        .where(ContractPeriod.archived_by_user_id == user_id)
-        .values(archived_by_user_id=None)
-    )
-
-    # 5. Nullify AuditLog user
-    await db.execute(
-        update(AuditLog)
-        .where(AuditLog.user_id == user_id)
-        .values(user_id=None)
-    )
-
-    # 6. Delete invites created by this user (unified table)
-    await db.execute(
-        delete(Invite)
-        .where(Invite.created_by == user_id)
-    )
-
-    # 8. Delete tasks assigned to this user
-    await db.execute(
-        delete(Task)
-        .where(Task.assigned_to_user_id == user_id)
-    )
-
-    # 9. Delete user notifications (user_id is NOT NULL)
-    await db.execute(
-        delete(UserNotification)
-        .where(UserNotification.user_id == user_id)
-    )
-
-    await user_repo.delete(user)
-    
-    # Log delete action
-    await AuditService(db).log_user_action(
-        user_id=current_admin.id,
-        action='delete',
-        target_user_id=user_id,
-        details=user_details
-    )
-    
-    return {"message": "User deleted successfully"}
+@router.post("/{user_id}/archive", response_model=ArchivedUserOut)
+async def archive_user(user_id: int, db: DBSessionDep, current_admin = Depends(require_permission("delete", "user", resource_id_param="user_id", project_id_param=None))):
+    """Move a user to the archive: block login and revoke permissions, keeping all user and business data"""
+    return await UserArchiveService(db).archive(user_id, current_admin)

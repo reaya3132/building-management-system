@@ -4,7 +4,7 @@ import api from '../lib/api'
 import { 
   Plus, 
   Copy, 
-  Trash2, 
+  Archive,
   Edit,
   Mail, 
   User,
@@ -13,6 +13,7 @@ import {
   Shield
 } from 'lucide-react'
 import { motion } from 'framer-motion'
+import ArchiveUserModal from '../components/ArchiveUserModal'
 
 interface Admin {
   id: number
@@ -33,6 +34,8 @@ export default function AdminManagement() {
     full_name: '',
     password: ''
   })
+  const [archiveTarget, setArchiveTarget] = useState<Pick<Admin, 'id' | 'full_name'> | null>(null)
+  const [archiving, setArchiving] = useState(false)
 
   // Check if user is admin
   if (me?.role !== 'Admin') {
@@ -75,16 +78,16 @@ export default function AdminManagement() {
     }
   }
 
-  const deleteAdmin = async (adminId: number) => {
-    if (!confirm('האם אתם בטוחים שברצונכם למחוק את המנהל?')) {
-      return
-    }
-
+  const archiveAdmin = async (adminId: number) => {
+    setArchiving(true)
     try {
-      await api.delete(`/users/${adminId}`)
+      await api.post(`/users/${adminId}/archive`)
       fetchAdmins()
     } catch (err: any) {
       setError(err.message)
+    } finally {
+      setArchiving(false)
+      setArchiveTarget(null)
     }
   }
 
@@ -156,11 +159,11 @@ export default function AdminManagement() {
                         <div className="flex gap-2">
                           {admin.id !== me?.id && (
                             <button
-                              onClick={() => deleteAdmin(admin.id)}
-                              className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 text-sm flex items-center gap-1"
+                              onClick={() => setArchiveTarget({ id: admin.id, full_name: admin.full_name })}
+                              className="text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300 text-sm flex items-center gap-1"
                             >
-                              <Trash2 className="w-4 h-4" />
-                              מחק
+                              <Archive className="w-4 h-4" />
+                              העבר לארכיון
                             </button>
                           )}
                         </div>
@@ -178,6 +181,14 @@ export default function AdminManagement() {
             </div>
           )}
         </div>
+
+        <ArchiveUserModal
+          open={archiveTarget !== null}
+          userName={archiveTarget?.full_name ?? ''}
+          loading={archiving}
+          onClose={() => setArchiveTarget(null)}
+          onConfirm={() => archiveTarget && archiveAdmin(archiveTarget.id)}
+        />
 
         {/* Create Admin Modal */}
         {showCreateModal && (
