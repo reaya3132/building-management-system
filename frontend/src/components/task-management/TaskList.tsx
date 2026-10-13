@@ -6,9 +6,10 @@ import { avatarUrl } from '../../lib/api'
 import { RefreshCw, User, Plus, Search, MessageCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { formatTaskCode } from '../../lib/taskCode'
-import type { Task, TaskStatus } from '../../pages/TaskCalendar'
+import type { Task, TaskStatus, UserForTask, TaskLabelType } from '../../pages/TaskCalendar'
 import TaskDetailModal from './TaskDetailModal'
 import CreateEventModal from './CreateEventModal'
+import TaskEditModal from './TaskEditModal'
 import UnreadMessagesDot from './UnreadMessagesDot'
 
 const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
@@ -43,7 +44,8 @@ export default function TaskList() {
   const me = useSelector((state: RootState) => state.auth.me)
   const isAdmin = me?.role === 'Admin'
   const [tasks, setTasks] = useState<Task[]>([])
-  const [users, setUsers] = useState<Array<{ id: number; full_name: string }>>([])
+  const [users, setUsers] = useState<UserForTask[]>([])
+  const [taskLabels, setTaskLabels] = useState<TaskLabelType[]>([])
   const [loading, setLoading] = useState(true)
   const [filterUserId, setFilterUserId] = useState<number | null>(null)
   const [statusFilter, setStatusFilter] = useState<TaskStatus | ''>('')
@@ -53,6 +55,8 @@ export default function TaskList() {
   const [unreadOnly, setUnreadOnly] = useState(false)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
+  // The task being edited via the shared TaskEditModal (opened from the detail modal).
+  const [editingTask, setEditingTask] = useState<Task | null>(null)
 
   // -- Create modal --
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -75,12 +79,19 @@ export default function TaskList() {
 
   const fetchUsers = useCallback(async () => {
     try {
-      const { data } = await api.get<Array<{ id: number; full_name: string }>>(
-        '/users/for-tasks'
-      )
+      const { data } = await api.get<UserForTask[]>('/users/for-tasks')
       setUsers(data)
     } catch {
       setUsers([])
+    }
+  }, [])
+
+  const fetchLabels = useCallback(async () => {
+    try {
+      const { data } = await api.get<TaskLabelType[]>('/tasks/labels')
+      setTaskLabels(data)
+    } catch {
+      setTaskLabels([])
     }
   }, [])
 
@@ -102,9 +113,11 @@ export default function TaskList() {
     }
   }, [fetchTasks])
 
+  // Users and labels feed both the admin filter and the edit modal (assignees may edit too).
   useEffect(() => {
-    if (isAdmin) fetchUsers()
-  }, [isAdmin, fetchUsers])
+    fetchUsers()
+    fetchLabels()
+  }, [fetchUsers, fetchLabels])
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
 
@@ -385,6 +398,18 @@ export default function TaskList() {
           setSelectedTaskId(null)
           setSelectedTask(null)
         }}
+        onEdit={(task) => setEditingTask(task)}
+      />
+
+      {/* Edit modal — TaskDetailModal only shows its edit button when given onEdit. */}
+      <TaskEditModal
+        task={editingTask}
+        isOpen={!!editingTask}
+        onClose={() => setEditingTask(null)}
+        users={users}
+        taskLabels={taskLabels}
+        onSaved={() => { void fetchTasks(true) }}
+        onLabelsChanged={fetchLabels}
       />
 
       <CreateEventModal
