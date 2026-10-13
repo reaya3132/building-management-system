@@ -105,9 +105,10 @@ def require_admin():
 
 async def get_outlook_connect_user_id(
     request: Request,
+    db: DBSessionDep,
     token_header: Annotated[str | None, Depends(oauth2_scheme_optional)] = None,
 ):
-    """For Outlook connect: user id from ?token= JWT or Authorization header."""
+    """For Outlook connect: user id from ?token= JWT or Authorization header. The user must be active."""
     query_token = request.query_params.get("token")
     token = query_token or token_header
     if not token:
@@ -115,4 +116,11 @@ async def get_outlook_connect_user_id(
     payload = decode_token(token)
     if not payload or "sub" not in payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    return int(payload["sub"])
+    try:
+        user_id = int(payload["sub"])
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    user = await UserRepository(db).get_by_id(user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
+    return user_id

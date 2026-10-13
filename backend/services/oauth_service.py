@@ -90,6 +90,11 @@ class OAuthService:
                     )
                 else:
                     # Link OAuth to existing account
+                    if not user.is_active:
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="User account is inactive"
+                        )
                     user.oauth_provider = "google"
                     user.oauth_id = oauth_id
                     user.avatar_url = avatar_url

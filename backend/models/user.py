@@ -36,6 +36,8 @@ class User(Base):
     last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Set when the user is moved to the archive (null = not archived)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     # CEMS-specific fields (null = no CEMS access)
     cems_role: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     cems_warehouse_id: Mapped[_uuid_module.UUID | None] = mapped_column(

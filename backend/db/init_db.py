@@ -50,6 +50,9 @@ _ADDITIVE_MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS email_2 VARCHAR(255)",
     # Optional unit price on a consumable item (cems_consumable_items pre-exists).
     "ALTER TABLE cems_consumable_items ADD COLUMN IF NOT EXISTS unit_price NUMERIC(12, 2)",
+    # User archive (replaces hard delete); null = not archived (users pre-exist).
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP",
+    "CREATE INDEX IF NOT EXISTS ix_users_archived_at ON users (archived_at)",
 )
 
 # ── Main application models ──────────────────────────────────────────────────

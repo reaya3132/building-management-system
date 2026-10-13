@@ -61,6 +61,13 @@ class UserOut(UserBase):
         return data
 
 
+class ArchivedUserOut(UserOut):
+    """User moved to the archive - full details plus archive metadata."""
+    archived_at: datetime
+    last_login: datetime | None = None
+    oauth_provider: str | None = None
+
+
 class ProfileUpdate(BaseModel):
     """Schema for user updating their own profile (name, email, phone)."""
     full_name: str | None = Field(default=None, min_length=1, max_length=255)
