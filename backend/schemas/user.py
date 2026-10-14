@@ -68,6 +68,28 @@ class ArchivedUserOut(UserOut):
     oauth_provider: str | None = None
 
 
+class RestoreSkippedItem(BaseModel):
+    """A grant from the archive snapshot that could not be restored."""
+    kind: Literal["project_role", "resource_policy", "cems_warehouse"]
+    item: Any
+    reason: Literal["project_not_found", "resource_not_found", "warehouse_not_found", "already_exists"]
+
+
+class UserRestoreReport(BaseModel):
+    snapshot_found: bool
+    restored_project_roles: list[dict[str, Any]]
+    restored_resource_policies: list[dict[str, Any]]
+    restored_cems_role: str | None = None
+    restored_cems_warehouse_id: str | None = None
+    skipped: list[RestoreSkippedItem]
+
+
+class UserRestoreOut(BaseModel):
+    """Result of restoring a user from the archive."""
+    user: UserOut
+    report: UserRestoreReport
+
+
 class ProfileUpdate(BaseModel):
     """Schema for user updating their own profile (name, email, phone)."""
     full_name: str | None = Field(default=None, min_length=1, max_length=255)
