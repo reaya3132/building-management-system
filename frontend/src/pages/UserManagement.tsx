@@ -4,6 +4,7 @@ import { useAppDispatch, useAppSelector } from '../utils/hooks'
 import { fetchMe } from '../store/slices/authSlice'
 import api, { avatarUrl } from '../lib/api'
 import ArchiveUserModal from '../components/ArchiveUserModal'
+import RestoreUserModal from '../components/RestoreUserModal'
 
 const DEFAULT_CALENDAR_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16']
 
@@ -18,6 +19,36 @@ interface User {
   calendar_color?: string | null
   avatar_url?: string | null
   phone?: string | null
+}
+
+interface RestoreReport {
+  snapshot_found: boolean
+  restored_project_roles: unknown[]
+  restored_resource_policies: unknown[]
+  restored_cems_role: string | null
+  restored_cems_warehouse_id: string | null
+  skipped: { kind: string; item: unknown; reason: string }[]
+}
+
+interface RestoreResult {
+  user: User
+  report: RestoreReport
+}
+
+const restoreSummary = (userName: string, report: RestoreReport) => {
+  const lines = [`המשתמש ${userName} שוחזר בהצלחה.`]
+  if (!report.snapshot_found) {
+    lines.push('לא נמצא תיעוד של ההרשאות מלפני ההעברה לארכיון, ולכן לא שוחזרו הרשאות.')
+    return lines.join('\n')
+  }
+  lines.push(
+    `שוחזרו ${report.restored_project_roles.length} תפקידים בפרויקטים ו-${report.restored_resource_policies.length} הרשאות משאבים.`
+  )
+  if (report.restored_cems_role) lines.push(`שוחזר תפקיד מחסנים: ${report.restored_cems_role}.`)
+  if (report.skipped.length > 0) {
+    lines.push(`${report.skipped.length} הרשאות לא שוחזרו כי הישות שאליה הן שייכות כבר לא קיימת או שההרשאה כבר קיימת.`)
+  }
+  return lines.join('\n')
 }
 
 interface ArchivedUser extends User {
@@ -42,6 +73,8 @@ export default function UserManagement() {
   const [archivedUsers, setArchivedUsers] = useState<ArchivedUser[]>([])
   const [archiveTarget, setArchiveTarget] = useState<Pick<User, 'id' | 'full_name'> | null>(null)
   const [archiving, setArchiving] = useState(false)
+  const [restoreTarget, setRestoreTarget] = useState<Pick<User, 'id' | 'full_name'> | null>(null)
+  const [restoring, setRestoring] = useState(false)
   const avatarInputRef = useRef<HTMLInputElement>(null)
 
   // Add user form state
@@ -170,6 +203,23 @@ export default function UserManagement() {
     }
   }
 
+  const handleRestoreUser = async (userId: number, userName: string) => {
+    setError(null)
+    setRestoring(true)
+    try {
+      const { data } = await api.post<RestoreResult>(`/users/${userId}/restore`)
+      await fetchArchivedUsers() // Refresh the archive list
+      alert(restoreSummary(userName, data.report))
+    } catch (err: any) {
+      const errorMessage = err.response?.data?.detail || err.message || 'Failed to restore user'
+      setError(errorMessage)
+      alert(`שגיאה בשחזור המשתמש: ${errorMessage}`)
+    } finally {
+      setRestoring(false)
+      setRestoreTarget(null)
+    }
+  }
+
   const handleEditUser = (user: User) => {
     setEditingUser(user)
     setEditUser({
@@ -268,6 +318,14 @@ export default function UserManagement() {
             loading={archiving}
             onClose={() => setArchiveTarget(null)}
             onConfirm={() => archiveTarget && handleArchiveUser(archiveTarget.id)}
+          />
+
+          <RestoreUserModal
+            open={restoreTarget !== null}
+            userName={restoreTarget?.full_name ?? ''}
+            loading={restoring}
+            onClose={() => setRestoreTarget(null)}
+            onConfirm={() => restoreTarget && handleRestoreUser(restoreTarget.id, restoreTarget.full_name)}
           />
 
           {/* Edit User Modal */}
@@ -473,18 +531,19 @@ export default function UserManagement() {
                   <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">נוצר בתאריך</th>
                   <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">התחברות אחרונה</th>
                   <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">הועבר לארכיון</th>
+                  <th className="text-right py-3 px-4 text-sm font-medium text-gray-700 dark:text-gray-300">פעולות</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="text-center py-8 text-gray-500 dark:text-gray-400">
+                    <td colSpan={9} className="text-center py-8 text-gray-500 dark:text-gray-400">
                       טוען ארכיון...
                     </td>
                   </tr>
                 ) : archivedUsers.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="text-center py-8 text-gray-500 dark:text-gray-400">
+                    <td colSpan={9} className="text-center py-8 text-gray-500 dark:text-gray-400">
                       אין משתמשים בארכיון
                     </td>
                   </tr>
@@ -510,6 +569,15 @@ export default function UserManagement() {
                       <td className="py-3 px-4 text-sm text-gray-900 dark:text-white whitespace-nowrap">{formatDate(user.created_at)}</td>
                       <td className="py-3 px-4 text-sm text-gray-900 dark:text-white whitespace-nowrap">{formatDate(user.last_login)}</td>
                       <td className="py-3 px-4 text-sm text-gray-900 dark:text-white whitespace-nowrap">{formatDate(user.archived_at)}</td>
+                      <td className="py-3 px-4">
+                        <button
+                          onClick={() => setRestoreTarget({ id: user.id, full_name: user.full_name })}
+                          className="text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300 text-sm font-medium px-3 py-1 rounded hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors whitespace-nowrap"
+                          title="שחזר משתמש מהארכיון"
+                        >
+                          שחזר
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}

@@ -6,7 +6,7 @@ from backend.core.deps import DBSessionDep, get_current_user, require_roles
 from backend.iam.decorators import require_permission
 from backend.core.config import settings
 from backend.repositories.user_repository import UserRepository
-from backend.schemas.user import UserOut, ArchivedUserOut, UserUpdate, CalendarSettingsUpdate, ProfileUpdate
+from backend.schemas.user import UserOut, ArchivedUserOut, UserRestoreOut, UserUpdate, CalendarSettingsUpdate, ProfileUpdate
 from backend.models.user import UserRole
 from backend.core.security import hash_password
 from backend.services.audit_service import AuditService
@@ -316,3 +316,10 @@ async def update_user(
 async def archive_user(user_id: int, db: DBSessionDep, current_admin = Depends(require_permission("delete", "user", resource_id_param="user_id", project_id_param=None))):
     """Move a user to the archive: block login and revoke permissions, keeping all user and business data"""
     return await UserArchiveService(db).archive(user_id, current_admin)
+
+
+@router.post("/{user_id}/restore", response_model=UserRestoreOut)
+async def restore_user(user_id: int, db: DBSessionDep, current_admin = Depends(require_permission("delete", "user", resource_id_param="user_id", project_id_param=None))):
+    """Restore an archived user: reactivate login and re-create the permissions revoked on archive"""
+    user, report = await UserArchiveService(db).restore(user_id, current_admin)
+    return {"user": user, "report": report}
