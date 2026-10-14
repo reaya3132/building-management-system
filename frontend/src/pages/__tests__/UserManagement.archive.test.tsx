@@ -92,3 +92,76 @@ describe('UserManagement archive', () => {
     expect(screen.getByText('חזרה למשתמשים')).toBeTruthy()
   })
 })
+
+describe('UserManagement restore', () => {
+  const report = {
+    snapshot_found: true,
+    restored_project_roles: [{ project_id: 7, role: 'editor' }],
+    restored_resource_policies: [],
+    restored_cems_role: null,
+    restored_cems_warehouse_id: null,
+    skipped: [{ kind: 'project_role', item: { project_id: 9 }, reason: 'project_not_found' }],
+  }
+
+  const openArchive = async () => {
+    renderPage()
+    await screen.findByText('Dana Member')
+    await userEvent.click(screen.getByText('ארכיון'))
+    await screen.findByText('Old User')
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(api.get).mockImplementation((url: string) =>
+      Promise.resolve({ data: url === '/users/archived' ? [archived] : [me, member] }) as any
+    )
+    vi.mocked(api.post).mockResolvedValue({ data: { user: { ...archived, is_active: true }, report } } as any)
+    vi.spyOn(window, 'confirm')
+    vi.spyOn(window, 'alert').mockImplementation(() => {})
+  })
+
+  it('shows a restore button for each archived user and opens the modal without calling the API', async () => {
+    await openArchive()
+    await userEvent.click(screen.getByText('שחזר'))
+    expect(screen.getByText('האם לשחזר את המשתמש Old User מהארכיון?')).toBeTruthy()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('cancel closes the modal without restoring', async () => {
+    await openArchive()
+    await userEvent.click(screen.getByText('שחזר'))
+    await userEvent.click(screen.getByText('ביטול'))
+    expect(screen.queryByText('אישור שחזור')).toBeNull()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('confirm restores the user, refreshes the archive list and reports restored/skipped grants', async () => {
+    await openArchive()
+    const archiveFetchesBefore = vi.mocked(api.get).mock.calls.filter(([url]) => url === '/users/archived').length
+
+    await userEvent.click(screen.getByText('שחזר'))
+    await userEvent.click(screen.getByText('אישור שחזור'))
+
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/users/3/restore'))
+    await waitFor(() => {
+      const after = vi.mocked(api.get).mock.calls.filter(([url]) => url === '/users/archived').length
+      expect(after).toBeGreaterThan(archiveFetchesBefore)
+    })
+    await waitFor(() => expect(window.alert).toHaveBeenCalled())
+    const message = vi.mocked(window.alert).mock.calls[0][0] as string
+    expect(message).toContain('המשתמש Old User שוחזר בהצלחה')
+    expect(message).toContain('שוחזרו 1 תפקידים בפרויקטים')
+    expect(message).toContain('1 הרשאות לא שוחזרו')
+    expect(screen.queryByText('אישור שחזור')).toBeNull()
+    expect(window.confirm).not.toHaveBeenCalled()
+  })
+
+  it('shows the server error when restore fails', async () => {
+    vi.mocked(api.post).mockRejectedValue({ response: { data: { detail: 'User is not archived' } } })
+    await openArchive()
+    await userEvent.click(screen.getByText('שחזר'))
+    await userEvent.click(screen.getByText('אישור שחזור'))
+    await waitFor(() => expect(window.alert).toHaveBeenCalledWith('שגיאה בשחזור המשתמש: User is not archived'))
+    expect(screen.queryByText('אישור שחזור')).toBeNull()
+  })
+})
