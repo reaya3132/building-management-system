@@ -1255,14 +1255,6 @@ class ReportService:
         project_ids = []
         s3_service = S3Service()
         for project in projects:
-            if project.image_url:
-                url = S3Service().generate_presigned_url(project.image_url)
-
-                print("S3 KEY:", project.image_url)
-                print("PRESIGNED GENERATED:", bool(url))
-                print("PRESIGNED HOST:", url.split("?")[0] if url else None)
-            else:
-                url = None
             try:
                 if project.image_url:
                     url = s3_service.generate_presigned_url(project.image_url)
