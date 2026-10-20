@@ -23,8 +23,9 @@ export default function DocumentsModals({
   onSelectDocument
 }: DocumentsModalsProps) {
   const getFileExtension = (filePath: string): string => {
-    return filePath.split('.').pop()?.toLowerCase() || ''
-  }
+  const pathWithoutQuery = filePath.split('?')[0]
+  return pathWithoutQuery.split('.').pop()?.toLowerCase() || ''
+}
   const getFileName = (filePath: string): string => {
     const parts = filePath.split('/')
     return parts[parts.length - 1] || 'קובץ'
@@ -168,7 +169,7 @@ export default function DocumentsModals({
                       )}
                       <div className="p-4 bg-white dark:bg-gray-800">
                         <p className="text-sm text-gray-900 dark:text-white truncate font-semibold mb-1">
-                          {doc.description || getFileName(doc.file_path)}
+                          {doc.description || `מסמך #${doc.id}`}
                         </p>
                         <p className="text-xs text-gray-500 dark:text-gray-400">
                           📅 {new Date(doc.uploaded_at).toLocaleDateString('he-IL', {
@@ -206,7 +207,7 @@ export default function DocumentsModals({
             <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-gray-50 to-white dark:from-gray-800 dark:to-gray-900">
               <div className="flex-1 min-w-0">
                 <h3 className="text-xl font-bold text-gray-900 dark:text-white truncate">
-                  {selectedDocument.description || selectedDocument.file_path.split('/').pop()}
+                  {selectedDocument.description || `מסמך #${selectedDocument.id}`}
                 </h3>
                 <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                   {new Date(selectedDocument.uploaded_at).toLocaleDateString('he-IL', {

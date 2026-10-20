@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 import logging
 import re
+from backend.services.s3_service import S3Service
 
 from backend.core.deps import DBSessionDep, require_roles, get_current_user
 from backend.iam.decorators import require_permission
@@ -275,15 +276,19 @@ async def get_transaction_documents(tx_id: int, db: DBSessionDep, user=Depends(g
     docs = await DocumentRepository(db).get_by_transaction_id(tx_id)
 
     result = []
-
+    s3_service = S3Service()
     for doc in docs:
+        file_path = doc.file_path
+
+        if file_path and not file_path.startswith(("http://", "https://", "/")):
+            file_path = s3_service.generate_presigned_url(file_path)
+
         result.append({
-            "id": doc.id,
-            "transaction_id": doc.entity_id,
-            # For new documents we store full S3 URL in file_path; for old ones this may still be a relative path
-            "file_path": doc.file_path,
-            "description": doc.description,
-            "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None
+        "id": doc.id,
+        "transaction_id": doc.transaction_id or doc.entity_id,
+        "file_path": file_path,
+        "description": doc.description,
+        "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None
         })
 
     # Fallback: include legacy file_path stored directly on the transaction row
@@ -293,7 +298,12 @@ async def get_transaction_documents(tx_id: int, db: DBSessionDep, user=Depends(g
             result.append({
                 "id": None,
                 "transaction_id": tx_id,
-                "file_path": tx.file_path,
+                "file_path": (
+    s3_service.generate_presigned_url(tx.file_path)
+    if tx.file_path
+    and not tx.file_path.startswith(("http://", "https://", "/"))
+    else tx.file_path
+),
                 "description": None,
                 "uploaded_at": None
             })
