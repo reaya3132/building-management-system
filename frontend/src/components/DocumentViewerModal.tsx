@@ -16,7 +16,8 @@ interface DocumentViewerModalProps {
 }
 
 function getFileExtension(filePath: string): string {
-  return filePath.split('.').pop()?.toLowerCase() || ''
+  const pathWithoutQuery = filePath.split('?')[0]
+  return pathWithoutQuery.split('.').pop()?.toLowerCase() || ''
 }
 function getFileName(filePath: string): string {
   const parts = filePath.split('/')
