@@ -51,6 +51,7 @@ from backend.models.task import (
     TaskMessageRead,
     task_assignees,
     TaskChecklistItem,
+    TaskKind,
     TaskStatus,
     EventType,
     ParticipantResponse,
@@ -417,6 +418,7 @@ def _task_to_out(task: Task, unread_count: int = 0) -> dict:
         "requires_closure_approval": getattr(task, "requires_closure_approval", False),
         "is_super_task": getattr(task, "is_super_task", False),
         "is_backlog": getattr(task, "is_backlog", False),
+        "task_kind": getattr(task, "task_kind", TaskKind.GENERAL) or TaskKind.GENERAL,
         "assigned_user_name": task.assigned_user.full_name if task.assigned_user else None,
         "assigned_user_color": color,
         "assigned_user_avatar": getattr(task.assigned_user, "avatar_url", None) if task.assigned_user else None,
@@ -1011,6 +1013,7 @@ async def get_unread_summary(
         .outerjoin(read, (read.task_id == TaskMessage.task_id) & (read.user_id == user.id))
         .where(
             TaskMessage.user_id != user.id,
+            Task.task_kind == TaskKind.GENERAL,
             Task.is_archived.is_(False),
             or_(read.last_read_at.is_(None), TaskMessage.created_at > read.last_read_at),
             recipient_condition,
@@ -1086,6 +1089,9 @@ async def create_task(
     is_super_task = bool(getattr(data, "is_super_task", False)) and user.role == "Admin"
     task = Task(
         title=data.title,
+        # The regular task API only ever creates regular tasks; the kind is never
+        # taken from the client.
+        task_kind=TaskKind.GENERAL,
         start_time=start_val,
         end_time=end_val,
         description=data.description,
