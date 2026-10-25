@@ -50,6 +50,12 @@ _GLOBAL_ROLE_POLICIES: dict[str, dict[str, set[str]]] = {
         ResourceType.USER.value: _ALL_ACTIONS,
         ResourceType.SUPPLIER.value: _ALL_ACTIONS,
         ResourceType.TASK.value: _ALL_ACTIONS,
+        # Collection tasks: read / write (create, add amounts and items) / update
+        # (edit, status incl. reopen, archive and unarchive). No DELETE: collection
+        # tasks and their financial data are never deleted.
+        ResourceType.COLLECTION_TASK.value: {
+            Action.READ.value, Action.WRITE.value, Action.UPDATE.value,
+        },
         ResourceType.CATEGORY.value: _ALL_ACTIONS,
         ResourceType.AUDIT_LOG.value: {Action.READ.value},
         ResourceType.CONTRACT.value: _ALL_ACTIONS,
