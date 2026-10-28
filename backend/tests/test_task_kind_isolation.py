@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.security import create_access_token
 from backend.models.task import Task, TaskKind, TaskLabel, TaskMessage, TaskStatus, task_assignees
 from backend.models.user import User
 from backend.models.user_notification import NotificationType, UserNotification
@@ -222,8 +223,7 @@ class TestRegularApiRejectsCollectionTask:
             ("post", "/respond", {"json": {"response": "accepted"}}),
             ("get", "/checklist", {}),
             ("post", "/checklist", {"json": {"text": "item"}}),
-            ("get", "/messages", {}),
-            ("post", "/messages", {"data": {"message": "hi"}}),
+            # Task-level files of a collection task live under /collection-tasks.
             ("post", "/attachments", {"files": {"file": ("a.txt", b"x", "text/plain")}}),
         ],
     )
@@ -235,6 +235,25 @@ class TestRegularApiRejectsCollectionTask:
             f"/api/v1/tasks/{collection_task_id}{suffix}", headers=_auth(admin_token), **kwargs
         )
         assert response.status_code == 404, (method, suffix, response.status_code, response.text)
+
+    async def test_shared_chat_uses_regular_access_rule(
+        self, test_client: AsyncClient, test_db: AsyncSession, member_token: str, admin_token: str,
+        collection_task_id: int,
+    ):
+        """The chat endpoints are shared by design and apply the regular rule to
+        both kinds (Admin or an assignee/participant). A collection task also
+        needs collection_task:read: the assigned member here has none."""
+        url = f"/api/v1/tasks/{collection_task_id}/messages"
+        assert (await test_client.get(url, headers=_auth(member_token))).status_code == 403
+        assert (await test_client.post(url, headers=_auth(member_token), data={"message": "hi"})).status_code == 403
+        assert (await test_client.get(url, headers=_auth(admin_token))).status_code == 200
+
+        outsider = User(email="outsider@test.com", password_hash="x", full_name="Outsider",
+                        role="Member", is_active=True, email_verified=True)
+        test_db.add(outsider)
+        await test_db.commit()
+        outsider_token = create_access_token(outsider.id)
+        assert (await test_client.get(url, headers=_auth(outsider_token))).status_code == 403
 
     async def test_collection_task_left_untouched(
         self, test_client: AsyncClient, test_db: AsyncSession, admin_token: str, collection_task_id: int,

@@ -13,6 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Body, File, Upload
 from backend.core.config import settings
 from backend.core.deps import DBSessionDep, get_current_user
 from backend.iam.decorators import require_permission
+from backend.iam.engine import PermissionsEngine
+from backend.iam.enums import Action, ResourceType
 from backend.services.s3_service import S3Service
 from backend.services.file_url_resolver import resolve_stored_file_url
 from backend.repositories.task_repository import ISRAEL_TZ, TaskRepository
@@ -62,7 +64,15 @@ from backend.services.outlook_sync_service import (
     update_outlook_event,
     delete_outlook_event,
 )
+from backend.services.task_access import (
+    can_access_task as _can_access_task,
+    can_manage_task as _can_manage_task,
+    is_task_assignee as _is_task_assignee,
+)
+from backend.models.collection_task import COLLECTION_AUDIT_ENTITY, CollectionEvent
+from backend.services.audit_service import AuditService
 from backend.services.notification_service import (
+    _build_message_preview,
     create_task_assignment_notifications,
     create_task_message_notifications,
     create_task_reminder,
@@ -649,21 +659,36 @@ async def restore_task(
     return _task_to_out(updated)
 
 
-def _is_task_assignee(task: Task, user_id: int) -> bool:
-    """True if the user is the primary assignee OR a member of the full set."""
-    if task.assigned_to_user_id == user_id:
-        return True
-    return any(getattr(a, "id", None) == user_id for a in (getattr(task, "assignees", None) or []))
+# Message previews in a collection task's history keep their original length.
+COLLECTION_PREVIEW_LENGTH = 80
 
 
-def _can_access_task(task: Task, user) -> bool:
-    """True if user can view/edit this task (Admin, any assignee, or participant)."""
-    if user.role == "Admin":
-        return True
-    if _is_task_assignee(task, user.id):
-        return True
-    participants = getattr(task, "participants", None) or []
-    return any(getattr(p, "user_id", None) == user.id for p in participants)
+async def _log_collection_chat(db, task: Task, user_id: int, event: str, details: dict) -> None:
+    """Record chat/file events in a COLLECTION task's history; a no-op for
+    regular tasks, whose behavior (no audit entries) is unchanged."""
+    if task.task_kind == TaskKind.COLLECTION:
+        await AuditService(db).log_action(user_id, event, COLLECTION_AUDIT_ENTITY, str(task.id), details)
+
+
+async def _get_chat_task(db, task_id: int, user) -> Task:
+    """Load a task for the shared chat endpoints — regular or collection.
+
+    Both kinds follow the same rule (``_can_access_task``): Admin, any assignee,
+    or a participant; anyone else gets 403, a missing task 404. A collection
+    task also requires the existing ``collection_task:read`` permission;
+    regular tasks are unchanged.
+    """
+    repo = TaskRepository(db)
+    task = await repo.get(task_id) or await repo.get(task_id, kind=TaskKind.COLLECTION)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.task_kind == TaskKind.COLLECTION and not await PermissionsEngine(db).has_permission(
+        user.id, Action.READ.value, ResourceType.COLLECTION_TASK.value
+    ):
+        raise HTTPException(status_code=403, detail="Permission denied: read on collection_task")
+    if not _can_access_task(task, user):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return task
 
 
 def _can_delete_message(message, user) -> bool:
@@ -778,14 +803,6 @@ def _is_message_read_by_all(
     )
 
 
-def _can_manage_task(task: Task, user) -> bool:
-    """True if user may add/manage this task: Admin, any assignee, or the creator."""
-    if user.role == "Admin":
-        return True
-    if _is_task_assignee(task, user.id):
-        return True
-    return getattr(task, "created_by_user_id", None) == user.id
-
 
 @router.get("/{task_id}/messages", response_model=list[TaskMessageOut])
 async def list_task_messages(
@@ -794,12 +811,7 @@ async def list_task_messages(
         user=Depends(get_current_user),
 ):
     """List chat messages for a task. Only assignee, participants, or Admin can see."""
-    repo = TaskRepository(db)
-    task = await repo.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if not _can_access_task(task, user):
-        raise HTTPException(status_code=403, detail="Access denied")
+    task = await _get_chat_task(db, task_id, user)
     result = await db.execute(
         select(TaskMessage)
         .options(selectinload(TaskMessage.user), selectinload(TaskMessage.attachments))
@@ -836,12 +848,7 @@ async def create_task_message(
     ``files``. A message must contain text and/or at least one file. Only the
     assignee, participants, or Admin can post.
     """
-    repo = TaskRepository(db)
-    task = await repo.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if not _can_access_task(task, user):
-        raise HTTPException(status_code=403, detail="Access denied")
+    task = await _get_chat_task(db, task_id, user)
     msg_text = (message or "").strip()
     valid_files = [f for f in (files or []) if f and f.filename]
     if not msg_text and not valid_files:
@@ -854,6 +861,9 @@ async def create_task_message(
         db.add(TaskMessageAttachment(message_id=msg.id, file_path=relative_path, file_name=original_name))
     await db.flush()
     await db.refresh(msg)
+    await _log_collection_chat(db, task, user.id, CollectionEvent.MESSAGE_ADDED, {
+        "message_id": msg.id, "preview": _build_message_preview(msg_text, COLLECTION_PREVIEW_LENGTH), "attachments": len(valid_files),
+    })
     if msg_text:
         notify_text = msg_text
     elif len(valid_files) == 1:
@@ -891,12 +901,7 @@ async def edit_task_message(
     Admin is the author). The new text must be non-empty. ``edited_at`` is stamped
     so the UI can show a "נערך" label. Attachments are untouched.
     """
-    repo = TaskRepository(db)
-    task = await repo.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if not _can_access_task(task, user):
-        raise HTTPException(status_code=403, detail="Access denied")
+    task = await _get_chat_task(db, task_id, user)
     msg = await _load_message_with_attachments(db, message_id)
     if not msg or msg.task_id != task_id:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -905,9 +910,14 @@ async def edit_task_message(
     new_text = (payload.message or "").strip()
     if not new_text:
         raise HTTPException(status_code=400, detail="לא ניתן לשמור הודעה ריקה")
+    old_preview = _build_message_preview(msg.message or "", COLLECTION_PREVIEW_LENGTH)
     msg.message = new_text
     msg.edited_at = datetime.now(timezone.utc).replace(tzinfo=None)
     await db.flush()
+    await _log_collection_chat(db, task, user.id, CollectionEvent.MESSAGE_EDITED, {
+        "message_id": msg.id, "before": {"preview": old_preview},
+        "after": {"preview": _build_message_preview(new_text, COLLECTION_PREVIEW_LENGTH)},
+    })
     recipient_ids = _task_recipient_ids(task)
     last_read_map = await _recipient_last_read_map(db, task_id)
     read_by_all = _is_message_read_by_all(msg, recipient_ids, last_read_map)
@@ -926,12 +936,7 @@ async def delete_task_message(
     The author or an Admin may delete. Cascade removes the attachment rows; the
     stored files (S3 or local) are deleted first.
     """
-    repo = TaskRepository(db)
-    task = await repo.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if not _can_access_task(task, user):
-        raise HTTPException(status_code=403, detail="Access denied")
+    task = await _get_chat_task(db, task_id, user)
     msg = await _load_message_with_attachments(db, message_id)
     if not msg or msg.task_id != task_id:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -939,6 +944,10 @@ async def delete_task_message(
         raise HTTPException(status_code=403, detail="Access denied")
     for att in list(msg.attachments or []):
         await _delete_stored_file(att.file_path)
+    await _log_collection_chat(db, task, user.id, CollectionEvent.MESSAGE_DELETED, {
+        "message_id": msg.id, "preview": _build_message_preview(msg.message or "", COLLECTION_PREVIEW_LENGTH),
+        "attachments": len(msg.attachments or []),
+    })
     await db.delete(msg)
     await db.flush()
     return None
@@ -957,12 +966,7 @@ async def delete_task_message_attachment(
     The author or an Admin may delete. If removing it leaves the message with no
     attachments and no text, the now-empty message is deleted too.
     """
-    repo = TaskRepository(db)
-    task = await repo.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if not _can_access_task(task, user):
-        raise HTTPException(status_code=403, detail="Access denied")
+    task = await _get_chat_task(db, task_id, user)
     msg = await _load_message_with_attachments(db, message_id)
     if not msg or msg.task_id != task_id:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -972,6 +976,9 @@ async def delete_task_message_attachment(
     if not att:
         raise HTTPException(status_code=404, detail="Attachment not found")
     await _delete_stored_file(att.file_path)
+    await _log_collection_chat(db, task, user.id, CollectionEvent.ATTACHMENT_DELETED, {
+        "message_id": msg.id, "attachment_id": att.id, "file_name": att.file_name,
+    })
     remaining = [a for a in (msg.attachments or []) if a.id != attachment_id]
     if not remaining and not (msg.message or "").strip():
         # The message would be left empty (no text, no attachments): delete the

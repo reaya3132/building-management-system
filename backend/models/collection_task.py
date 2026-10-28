@@ -50,6 +50,33 @@ class CollectionType:
     LEDGER = "ledger"
 
 
+# History of collection tasks lives in the shared ``audit_logs`` table
+# (``AuditService.log_action``) under this entity, ``entity_id`` = task id.
+COLLECTION_AUDIT_ENTITY = "collection_task"
+
+
+class CollectionEvent:
+    """``audit_logs.action`` values for collection tasks."""
+    CREATED = "created"
+    UPDATED = "updated"
+    PROJECT_CHANGED = "project_changed"
+    MONTH_CHANGED = "month_changed"
+    ASSIGNEES_CHANGED = "assignees_changed"
+    STATUS_CHANGED = "status_changed"
+    REOPENED = "reopened"
+    ARCHIVED = "archived"
+    UNARCHIVED = "unarchived"
+    ADJUSTMENT_ADDED = "adjustment_added"
+    LEDGER_ITEM_ADDED = "ledger_item_added"
+    LEDGER_ITEM_UPDATED = "ledger_item_updated"
+    LEDGER_ITEM_ARCHIVED = "ledger_item_archived"
+    MESSAGE_ADDED = "message_added"
+    MESSAGE_EDITED = "message_edited"
+    MESSAGE_DELETED = "message_deleted"
+    ATTACHMENT_ADDED = "attachment_added"
+    ATTACHMENT_DELETED = "attachment_deleted"
+
+
 class CollectionTaskDetails(Base):
     __tablename__ = "collection_task_details"
     __table_args__ = (
