@@ -21,7 +21,8 @@ import {
   Bell,
   BookOpen,
   Package,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Wallet
 } from 'lucide-react'
 import { useTheme } from '../../contexts/ThemeContext'
 import { useInventorySettings } from '../../contexts/InventorySettingsContext'
@@ -86,6 +87,13 @@ const ALL_NAVIGATION_ITEMS: NavigationItem[] = [
     icon: ClipboardList,
     description: 'לוח, יומן, משימות והודעות',
     permission: { resource: 'task' }
+  },
+  {
+    name: 'גבייה',
+    href: '/collection-tasks',
+    icon: Wallet,
+    description: 'משימות גבייה לפי חודש חיוב',
+    permission: { resource: 'collection_task' }
   },
   {
     name: 'דלפק הבניין',

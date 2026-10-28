@@ -72,6 +72,7 @@ const RESOURCE_TYPE_LABELS: Record<string, string> = {
   dashboard: 'לוח בקרה',
   building_reception: 'דלפק בניין',
   building: 'ניהול בניינים',
+  collection_task: 'גבייה',
   cems_warehouse: 'מחסן',
   cems_consumable: 'חומר מתכלה',
   cems_fixed_asset: 'רכוש קבוע',
