@@ -45,6 +45,10 @@ class ResourceType(str, Enum):
     USER = "user"
     SUPPLIER = "supplier"
     TASK = "task"
+    # Collection (גבייה) tasks. Deliberately separate from TASK and absent from
+    # every project-role policy: access is granted only by global role or by an
+    # explicit per-user grant, never derived from project permissions.
+    COLLECTION_TASK = "collection_task"
     CATEGORY = "category"
     AUDIT_LOG = "audit_log"
     CONTRACT = "contract"

@@ -6,7 +6,7 @@ from sqlalchemy import select, or_, and_, exists, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.models.task import Task, TaskParticipant, TaskStatus, task_assignees
+from backend.models.task import Task, TaskKind, TaskParticipant, TaskStatus, task_assignees
 
 # Task ``start_time`` values are stored as naive Israel local wall-clock (see the
 # serializer note in ``backend/schemas/task.py``), so "has the task come due?"
@@ -18,6 +18,12 @@ ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 class TaskRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    @staticmethod
+    def _general_only():
+        """Restrict to regular tasks. Every query here serves the regular task
+        screens, so collection (גבייה) tasks must never leak into them."""
+        return Task.task_kind == TaskKind.GENERAL
 
     @staticmethod
     def _visible_to_user_clause(user_id: int):
@@ -54,6 +60,7 @@ class TaskRepository:
                 selectinload(Task.labels),
                 selectinload(Task.participants).selectinload(TaskParticipant.user),
             )
+            .where(self._general_only())
             .order_by(Task.start_time)
         )
         if not include_archived:
@@ -104,6 +111,7 @@ class TaskRepository:
             .options(selectinload(Task.assigned_user))
             .where(Task.apartment_id == apartment_id)
             .where(Task.is_archived == False)  # noqa: E712
+            .where(self._general_only())
             .order_by(Task.start_time.is_(None), Task.start_time)
         )
         return list(result.unique().scalars().all())
@@ -115,6 +123,7 @@ class TaskRepository:
             .options(selectinload(Task.assigned_user))
             .where(Task.apartment_id == apartment_id)
             .where(Task.is_archived == True)  # noqa: E712
+            .where(self._general_only())
             .order_by(Task.archived_at.desc())
         )
         return list(result.unique().scalars().all())
@@ -141,13 +150,14 @@ class TaskRepository:
             select(Task.apartment_id, func.count(Task.id))
             .where(Task.apartment_id.in_(apartment_ids))
             .where(Task.is_archived == False)  # noqa: E712
+            .where(self._general_only())
             .where(Task.status != TaskStatus.COMPLETED)
             .where(or_(Task.start_time.is_(None), Task.start_time <= now_israel))
             .group_by(Task.apartment_id)
         )
         return {apartment_id: count for apartment_id, count in result.all()}
 
-    async def get(self, task_id: int) -> Task | None:
+    async def get(self, task_id: int, kind: str = TaskKind.GENERAL) -> Task | None:
         result = await self.db.execute(
             select(Task)
             .options(
@@ -158,6 +168,7 @@ class TaskRepository:
                 selectinload(Task.participants).selectinload(TaskParticipant.user),
             )
             .where(Task.id == task_id)
+            .where(Task.task_kind == kind)
         )
         return result.unique().scalar_one_or_none()
 
@@ -187,6 +198,7 @@ class TaskRepository:
                 selectinload(Task.participants).selectinload(TaskParticipant.user),
             )
             .where(Task.is_archived == True)
+            .where(self._general_only())
             .order_by(Task.archived_at.desc())
         )
         if for_user_id is not None:
@@ -212,6 +224,7 @@ class TaskRepository:
                 selectinload(Task.participants).selectinload(TaskParticipant.user),
             )
             .where(Task.is_super_task == True)   # noqa: E712
+            .where(self._general_only())
             .where(Task.is_archived == False)     # noqa: E712
             .where(Task.status != TaskStatus.COMPLETED)
             .order_by(Task.created_at.asc())
@@ -251,6 +264,7 @@ class TaskRepository:
             )
             .where(Task.is_archived == False)  # noqa: E712
             .where(Task.status != TaskStatus.COMPLETED)
+            .where(self._general_only())
             .order_by(Task.created_at.asc())
         )
         if for_user_id is not None:
@@ -270,6 +284,7 @@ class TaskRepository:
                 Task.completed_at.isnot(None),
                 Task.completed_at < today_midnight,
                 Task.is_archived == False,
+                self._general_only(),
             )
             .values(is_archived=True, archived_at=now)
             .execution_options(synchronize_session=False)

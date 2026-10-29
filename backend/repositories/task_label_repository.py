@@ -2,7 +2,7 @@
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.task import TaskLabel, task_task_labels
+from backend.models.task import Task, TaskKind, TaskLabel, task_task_labels
 
 
 class TaskLabelRepository:
@@ -24,11 +24,13 @@ class TaskLabelRepository:
         return list(result.scalars().all())
 
     async def count_tasks_for_label(self, label_id: int) -> int:
-        """Count how many tasks are tagged with this label (via the association table)."""
+        """Count how many regular tasks are tagged with this label (via the association table)."""
         result = await self.db.execute(
             select(func.count())
             .select_from(task_task_labels)
+            .join(Task, Task.id == task_task_labels.c.task_id)
             .where(task_task_labels.c.task_label_id == label_id)
+            .where(Task.task_kind == TaskKind.GENERAL)
         )
         return result.scalar_one()
 

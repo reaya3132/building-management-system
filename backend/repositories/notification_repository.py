@@ -1,10 +1,21 @@
 """Repository for user notifications."""
 from datetime import datetime
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.models.task import Task, TaskKind
 from backend.models.user_notification import UserNotification, NotificationType
+
+
+def _task_kind_clause(task_kind: str):
+    """Keep each module's notifications apart: the general center shows
+    notifications with no task or on a regular task; collection notifications
+    are shown only by the collection module."""
+    in_kind = UserNotification.task_id.in_(select(Task.id).where(Task.task_kind == task_kind))
+    if task_kind == TaskKind.GENERAL:
+        return or_(UserNotification.task_id.is_(None), in_kind)
+    return in_kind
 
 
 class NotificationRepository:
@@ -25,6 +36,7 @@ class NotificationRepository:
         type_filter: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        task_kind: str = TaskKind.GENERAL,
     ) -> list[UserNotification]:
         q = (
             select(UserNotification)
@@ -33,6 +45,7 @@ class NotificationRepository:
                 selectinload(UserNotification.task),
             )
             .where(UserNotification.user_id == user_id)
+            .where(_task_kind_clause(task_kind))
         )
         if unread_only:
             q = q.where(UserNotification.read_at.is_(None))
@@ -73,11 +86,12 @@ class NotificationRepository:
         )
         return result.unique().scalar_one_or_none()
 
-    async def count_unread(self, user_id: int) -> int:
+    async def count_unread(self, user_id: int, task_kind: str = TaskKind.GENERAL) -> int:
         result = await self.db.execute(
             select(func.count(UserNotification.id)).where(
                 UserNotification.user_id == user_id,
                 UserNotification.read_at.is_(None),
+                _task_kind_clause(task_kind),
             )
         )
         return result.scalar() or 0

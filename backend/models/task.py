@@ -2,7 +2,7 @@
 from __future__ import annotations
 from datetime import date, datetime, timezone
 import uuid
-from sqlalchemy import String, DateTime, Date, Text, ForeignKey, Table, Column, Integer, UniqueConstraint, Boolean
+from sqlalchemy import String, DateTime, Date, Text, ForeignKey, Table, Column, Integer, UniqueConstraint, Boolean, CheckConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
@@ -48,6 +48,13 @@ class EventType:
     TASK = "task"
 
 
+class TaskKind:
+    """Which module owns a task row. Regular task screens only ever see GENERAL;
+    COLLECTION tasks (גבייה) are served exclusively by the collection module."""
+    GENERAL = "general"
+    COLLECTION = "collection"
+
+
 class ParticipantResponse:
     """Invitation response: ממתין, מקבל, דוחה (like Outlook)."""
     PENDING = "pending"
@@ -70,9 +77,21 @@ class TaskLabel(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
+    __table_args__ = (
+        CheckConstraint(
+            f"task_kind IN ('{TaskKind.GENERAL}', '{TaskKind.COLLECTION}')",
+            name="ck_tasks_task_kind",
+        ),
+        # On PostgreSQL this index is built by the CONCURRENTLY migration script
+        # (it cannot run inside init_db's transaction); declared here for SQLite tests.
+        Index("ix_tasks_task_kind", "task_kind").ddl_if(dialect="sqlite"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     title: Mapped[str] = mapped_column(String(255), index=True)
+    task_kind: Mapped[str] = mapped_column(
+        String(32), default=TaskKind.GENERAL, server_default=TaskKind.GENERAL, nullable=False
+    )
     start_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     end_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, default=None)
