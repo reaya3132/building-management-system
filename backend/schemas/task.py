@@ -238,6 +238,7 @@ class TaskOut(BaseModel):
     has_unread_messages: bool = False
     # How many chat messages on this task the current user hasn't read (badge count).
     unread_messages_count: int = 0
+    task_kind: str = "general"
     assigned_user_name: str | None = None
     assigned_user_color: str | None = None
     assigned_user_avatar: str | None = None

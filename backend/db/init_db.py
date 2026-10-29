@@ -53,6 +53,9 @@ _ADDITIVE_MIGRATIONS: tuple[str, ...] = (
     # User archive (replaces hard delete); null = not archived (users pre-exist).
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP",
     "CREATE INDEX IF NOT EXISTS ix_users_archived_at ON users (archived_at)",
+    # Task kind (general / collection). Safety net only: the CHECK constraint and the
+    # index are applied by backend/migrations SQL (the index needs CONCURRENTLY).
+    "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_kind VARCHAR(32) NOT NULL DEFAULT 'general'",
 )
 
 # ── Main application models ──────────────────────────────────────────────────

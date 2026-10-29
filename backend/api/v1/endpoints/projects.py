@@ -80,6 +80,7 @@ async def _build_projects_list(db, projects) -> list[ProjectOut]:
     earliest_by_project = {row[0]: row[1] for row in earliest_result.all()}
 
     result = []
+    s3_service = S3Service()
     for project in projects:
         fund = funds_by_project.get(project.id)
         first_start = earliest_by_project.get(project.id)
@@ -107,17 +108,13 @@ async def _build_projects_list(db, projects) -> list[ProjectOut]:
             "monthly_price_per_apartment": float(project.monthly_price_per_apartment) if project.monthly_price_per_apartment else None,
             "address": project.address,
             "city": project.city,
-            # "image_url": project.image_url,
-            # "contract_file_url": project.contract_file_url,
             "image_url": (
-                 S3Service().generate_presigned_url(project.image_url)
-                 if project.image_url
-                 else None
+                 s3_service.generate_presigned_url(project.image_url)
+                 if project.image_url else None
                 ),
             "contract_file_url": (
-                  S3Service().generate_presigned_url(project.contract_file_url)
-                 if project.contract_file_url
-                 else None
+                  s3_service.generate_presigned_url(project.contract_file_url)
+                  if project.contract_file_url else None
                 ),
             "created_at": project.created_at,
             "total_value": float(getattr(project, 'total_value', 0.0)),
@@ -343,7 +340,8 @@ async def get_project(project_id: int, db: DBSessionDep, user = Depends(get_curr
         s = project.start_date
         first_start = s.date() if hasattr(s, 'date') else s
 
-    
+    s3_service = S3Service()
+
     # Create ProjectOut instance using model_validate to ensure proper validation
     # Keep dates as date objects (not strings) - Pydantic will serialize them
     project_data = {
@@ -364,19 +362,14 @@ async def get_project(project_id: int, db: DBSessionDep, user = Depends(get_curr
         "monthly_price_per_apartment": float(project.monthly_price_per_apartment) if project.monthly_price_per_apartment else None,
         "address": project.address,
         "city": project.city,
-        # "image_url": project.image_url,
-        # "contract_file_url": project.contract_file_url,
-                    "image_url": (
-                 S3Service().generate_presigned_url(project.image_url)
-                 if project.image_url
-                 else None
+        "image_url": (
+                 s3_service.generate_presigned_url(project.image_url)
+                if project.image_url else None
                 ),
-            "contract_file_url": (
-                  S3Service().generate_presigned_url(project.contract_file_url)
-                 if project.contract_file_url
-                 else None
+        "contract_file_url": (
+                  s3_service.generate_presigned_url(project.contract_file_url)
+                if project.contract_file_url else None
                 ),
-
         "created_at": project.created_at,
         "total_value": float(getattr(project, 'total_value', 0.0)),
         "has_fund": fund is not None,
@@ -733,7 +726,8 @@ async def get_project_full(
         {"category": cat, "amount": amount, "color": f"#{hash(cat) % 0xFFFFFF:06x}"}
         for cat, amount in expense_by_category.items()
     ]
-    
+    s3_service = S3Service()
+
     # Build project dict
     project_dict = {
         "id": project.id,
@@ -753,19 +747,14 @@ async def get_project_full(
         "monthly_price_per_apartment": project.monthly_price_per_apartment,
         "address": project.address,
         "city": project.city,
-        # "image_url": project.image_url,
-        # "contract_file_url": project.contract_file_url,
-                    "image_url": (
-                 S3Service().generate_presigned_url(project.image_url)
-                 if project.image_url
-                 else None
+        "image_url": (
+                 s3_service.generate_presigned_url(project.image_url)
+                if project.image_url else None
                 ),
-            "contract_file_url": (
-                  S3Service().generate_presigned_url(project.contract_file_url)
-                 if project.contract_file_url
-                 else None
+        "contract_file_url": (
+                  s3_service.generate_presigned_url(project.contract_file_url)
+                if project.contract_file_url else None
                 ),
-
         "created_at": project.created_at.isoformat() if project.created_at else None,
         "total_value": getattr(project, 'total_value', 0.0),
         "has_fund": fund_data is not None,
