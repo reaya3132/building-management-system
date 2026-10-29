@@ -273,3 +273,30 @@ class AuditPage(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+# ── ledger statement (PDF) ───────────────────────────────────────────────────
+
+class StatementLineIn(BaseModel):
+    """One line of the exported document — edited in the export window only;
+    it is never written back to the ledger."""
+    model_config = ConfigDict(extra="forbid")
+
+    subject: Annotated[Subject, BeforeValidator(_strip)]
+    amount: Money
+
+
+class StatementRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[StatementLineIn] = Field(default_factory=list, max_length=500)
+
+
+class MonthCount(BaseModel):
+    month: date
+    count: int
+
+
+class MonthCounts(BaseModel):
+    year: int
+    months: list[MonthCount]

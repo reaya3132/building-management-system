@@ -2,7 +2,7 @@ import { Archive, Users } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import type { CollectionTaskListItem } from '../../lib/collectionApi'
 import UnreadMessagesDot from '../task-management/UnreadMessagesDot'
-import { COLLECTION_STATUS_CHIP, COLLECTION_STATUS_LABELS, COLLECTION_TYPE_LABELS, formatILS } from './collectionUtils'
+import { COLLECTION_STATUS_CHIP, COLLECTION_STATUS_LABELS, COLLECTION_TYPE_LABELS, displayCollectionTitle, formatILS } from './collectionUtils'
 
 export function projectLabel(task: Pick<CollectionTaskListItem, 'project'>): string {
   return task.project.parent_name ? `${task.project.parent_name} › ${task.project.name}` : task.project.name
@@ -37,7 +37,7 @@ export default function CollectionTaskCard({
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="font-semibold text-gray-900 dark:text-white break-words min-w-0">{task.title}</p>
+        <p className="font-semibold text-gray-900 dark:text-white break-words min-w-0">{displayCollectionTitle(task)}</p>
         <UnreadMessagesDot show={task.unread_messages_count > 0} count={task.unread_messages_count} />
       </div>
       <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{projectLabel(task)}</p>

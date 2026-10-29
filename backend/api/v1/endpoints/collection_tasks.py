@@ -12,9 +12,12 @@ Static paths are declared before ``/{task_id}`` so they are never parsed as ids.
 from __future__ import annotations
 
 import json
+from datetime import date
+from decimal import Decimal
 from typing import Literal
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from pydantic import TypeAdapter, ValidationError
 
 from backend.api.v1.endpoints.tasks import (
@@ -32,6 +35,7 @@ from backend.models.collection_task import (
     CollectionAmountAdjustment,
     CollectionEvent,
     CollectionLedgerItem,
+    CollectionType,
 )
 from backend.models.project import Project
 from backend.models.task import Task, TaskAttachment, TaskKind
@@ -57,9 +61,12 @@ from backend.schemas.collection_task import (
     LedgerItemOut,
     LedgerItemResult,
     LedgerItemUpdate,
+    MonthCount,
+    MonthCounts,
     MoveMonthIn,
     ProjectBrief,
     ProjectOption,
+    StatementRequest,
     StatusIn,
     StatusSummary,
     UserBrief,
@@ -74,6 +81,7 @@ from backend.services.collection_task_service import (
     _assignee_ids,
     display_status,
 )
+from backend.services.collection_statement_pdf import StatementLine, render_statement_pdf
 from backend.services.file_url_resolver import resolve_stored_file_url
 from backend.api.v1.endpoints.notifications import _to_out as _notification_to_out
 
@@ -244,6 +252,20 @@ async def collection_unread_summary(db: DBSessionDep, user=Depends(require_permi
     return CollectionUnreadSummary(total_unread=total, task_count=tasks)
 
 
+@router.get("/month-counts", response_model=MonthCounts)
+async def collection_month_counts(
+    db: DBSessionDep,
+    user=Depends(require_permission("read", COLLECTION, project_id_param=None)),
+    year: int = Query(..., ge=2000, le=2100),
+):
+    """Not-closed (open + in progress) tasks in each month of ``year``, for the
+    month navigator. Independent of the page filters; computed, never stored."""
+    not_closed = [STATUS_TO_STORED["open"], STATUS_TO_STORED["in_progress"]]
+    counts = await CollectionTaskRepository(db).month_counts(year, not_closed, user)
+    months = [date(year, m, 1) for m in range(1, 13)]
+    return MonthCounts(year=year, months=[MonthCount(month=m, count=counts.get(m, 0)) for m in months])
+
+
 @router.get("/notifications", response_model=list[NotificationOut])
 async def collection_notifications(
     db: DBSessionDep,
@@ -325,6 +347,31 @@ async def list_collection_ledger_items(
     await CollectionTaskService(db, user).load_for_view(task_id)
     items = await CollectionTaskRepository(db).list_ledger_items(task_id, include_archived=include_archived)
     return [_item_out(i) for i in items]
+
+
+@router.post("/{task_id}/statement.pdf")
+async def export_collection_statement(task_id: int, data: StatementRequest, db: DBSessionDep,
+                                      user=Depends(get_current_user)):
+    """PDF statement of a ledger task (ledger only). The lines come from the
+    export window — the active items, possibly edited for this document — and
+    are rendered as sent; nothing is written to the ledger. The total is
+    recomputed here from those lines."""
+    await CollectionTaskService(db, user).load_for_view(task_id)
+    repo = CollectionTaskRepository(db)
+    details = await repo.get_details(task_id)
+    if details.collection_type != CollectionType.LEDGER:
+        raise collection_error(409, "wrong_collection_type", "A statement is available for ledger tasks only")
+    project, parent_name = await repo.get_project_brief(details.project_id)
+    lines = [StatementLine(subject=i.subject, amount=i.amount) for i in data.items]
+    content = render_statement_pdf(
+        billing_month=details.billing_month,
+        project=f"{parent_name} › {project.name}" if parent_name else project.name,
+        lines=lines,
+        total=sum((line.amount for line in lines), Decimal("0.00")),
+    )
+    filename = quote(f"statement_{task_id}_{details.billing_month:%Y-%m}.pdf")
+    return Response(content=content, media_type="application/pdf",
+                    headers={"Content-Disposition": f"inline; filename*=UTF-8''{filename}"})
 
 
 @router.patch("/{task_id}", response_model=CollectionTaskDetail)

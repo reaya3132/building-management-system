@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSelector } from 'react-redux'
 import { useSearchParams } from 'react-router-dom'
 import {
@@ -29,6 +29,7 @@ import UnreadMessagesDot from '../components/task-management/UnreadMessagesDot'
 import CollectionTaskCard, { StatusChip, projectLabel } from '../components/collection/CollectionTaskCard'
 import CollectionTaskDetailModal from '../components/collection/CollectionTaskDetailModal'
 import CreateCollectionTaskModal from '../components/collection/CreateCollectionTaskModal'
+import MonthStrip from '../components/collection/MonthStrip'
 import { useCollectionLookups } from '../components/collection/useCollectionLookups'
 import {
   COLLECTION_STATUSES,
@@ -38,6 +39,7 @@ import {
   FIELD_CLASS,
   collectionErrorMessage,
   currentMonth,
+  displayCollectionTitle,
   formatILS,
   formatMonth,
   shiftMonth,
@@ -139,6 +141,28 @@ export default function CollectionTasks() {
   }, [filters, page, view, reloadKey])
 
   const reload = useCallback(() => setReloadKey((k) => k + 1), [])
+
+  // Month navigator counts: one request per year, cached by year. Any change
+  // made from this page (create, status, archive, restore, month move) bumps
+  // reloadKey, which drops the cache so the counts are fetched again.
+  const year = Number(month.slice(0, 4))
+  const monthCountsCache = useRef(new Map<number, Record<string, number>>())
+  const [monthCounts, setMonthCounts] = useState<Record<string, number> | undefined>()
+  useEffect(() => { monthCountsCache.current.clear() }, [reloadKey])
+  useEffect(() => {
+    const cached = monthCountsCache.current.get(year)
+    if (cached) { setMonthCounts(cached); return }
+    let cancelled = false
+    setMonthCounts(undefined)
+    CollectionAPI.monthCounts(year)
+      .then((months) => {
+        const byMonth = Object.fromEntries(months.map((m) => [m.month.slice(0, 7), m.count]))
+        monthCountsCache.current.set(year, byMonth)
+        if (!cancelled) setMonthCounts(byMonth)
+      })
+      .catch(() => { if (!cancelled) setMonthCounts({}) })
+    return () => { cancelled = true }
+  }, [year, reloadKey])
   const openTask = useCallback((id: number | null) => updateParams({ task: id ? String(id) : null }), [updateParams])
 
   const activeFilterCount =
@@ -249,6 +273,8 @@ export default function CollectionTasks() {
             </button>
           </div>
         </div>
+
+        <MonthStrip month={month} counts={monthCounts} onSelect={(m) => updateParams({ month: m === currentMonth() ? null : m })} />
 
         {/* Search + filters */}
         <div className="relative">
@@ -488,7 +514,7 @@ function ListView({
                 <td className="px-4 py-3">
                   <span className="inline-flex items-center gap-2 font-medium text-gray-900 dark:text-white">
                     <button type="button" className="text-right hover:underline" onClick={(e) => { e.stopPropagation(); onOpen(task.id) }}>
-                      {task.title}
+                      {displayCollectionTitle(task)}
                     </button>
                     <UnreadMessagesDot show={task.unread_messages_count > 0} count={task.unread_messages_count} />
                   </span>

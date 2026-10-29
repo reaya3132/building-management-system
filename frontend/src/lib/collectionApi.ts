@@ -121,6 +121,18 @@ export interface CollectionAuditPage {
   page_size: number
 }
 
+export interface CollectionMonthCount {
+  /** First day of the month, YYYY-MM-DD. */
+  month: string
+  /** Tasks in the month that are not closed (open + in progress). */
+  count: number
+}
+
+export interface StatementLine {
+  subject: string
+  amount: string
+}
+
 export interface CollectionListFilters {
   /** Billing month, YYYY-MM (required by the server). */
   month: string
@@ -188,6 +200,33 @@ export const CollectionAPI = {
   async unreadSummary(): Promise<CollectionUnreadSummary> {
     const { data } = await api.get<CollectionUnreadSummary>(`${BASE}/unread-summary`)
     return data
+  },
+
+  /** Not-closed tasks in each of the year's 12 months (independent of page filters). */
+  async monthCounts(year: number): Promise<CollectionMonthCount[]> {
+    const { data } = await api.get<{ year: number; months: CollectionMonthCount[] }>(`${BASE}/month-counts`, {
+      params: { year },
+    })
+    return data.months
+  },
+
+  /**
+   * Renders the ledger statement PDF from the document lines edited in the
+   * export window. Nothing is saved; the server recomputes the total.
+   */
+  async statementPdf(taskId: number, items: StatementLine[]): Promise<Blob> {
+    try {
+      const { data } = await api.post<Blob>(`${BASE}/${taskId}/statement.pdf`, { items }, { responseType: 'blob' })
+      return data
+    } catch (err) {
+      // With responseType 'blob' the error body is a Blob too; restore the JSON
+      // so callers read `detail` (and its `code`) like any other error.
+      const response = (err as { response?: { data?: unknown } }).response
+      if (response?.data instanceof Blob) {
+        try { response.data = JSON.parse(await response.data.text()) } catch { /* not JSON */ }
+      }
+      throw err
+    }
   },
 
   async projectOptions(): Promise<CollectionProjectOption[]> {

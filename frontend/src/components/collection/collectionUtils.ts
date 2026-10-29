@@ -25,8 +25,27 @@ export const COLLECTION_STATUS_DOT: Record<CollectionStatus, string> = {
 }
 
 export const COLLECTION_TYPE_LABELS: Record<CollectionType, string> = {
-  single: 'סכום יחיד',
-  ledger: 'פירוט פריטים',
+  single: 'חד־פעמית',
+  ledger: 'כרטסת',
+}
+
+/** Display prefix of a ledger task's title; never stored or sent to the server. */
+export const LEDGER_TITLE_PREFIX = `${COLLECTION_TYPE_LABELS.ledger} - `
+
+/**
+ * The title as shown: "כרטסת - <title>" for a ledger, the stored title
+ * otherwise. Display only — forms edit and save the raw `title`, so the prefix
+ * can never be stored or doubled.
+ */
+export function displayCollectionTitle(task: { title: string; collection_type: CollectionType }): string {
+  return task.collection_type === 'ledger' ? `${LEDGER_TITLE_PREFIX}${task.title}` : task.title
+}
+
+const HE_MONTHS_SHORT = new Intl.DateTimeFormat('he-IL', { month: 'short' })
+
+/** Short Hebrew month name for month index 1–12. */
+export function shortMonthName(month: number): string {
+  return HE_MONTHS_SHORT.format(new Date(2000, month - 1, 1))
 }
 
 const ILS = new Intl.NumberFormat('he-IL', {

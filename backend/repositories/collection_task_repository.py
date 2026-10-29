@@ -231,6 +231,19 @@ class CollectionTaskRepository:
         )
         return [(status, count, _money(total)) for status, count, total in result.all()]
 
+    async def month_counts(self, year: int, statuses: list[str], user) -> dict[date, int]:
+        """Tasks per billing month of ``year`` in the given stored statuses, in
+        one grouped query. Ignores the page's filters on purpose; keeps the list
+        visibility rule and the list's default of leaving archived tasks out."""
+        q = (
+            self._filtered([CollectionTaskDetails.billing_month, func.count(Task.id)],
+                           CollectionFilters(statuses=statuses), user)
+            .where(CollectionTaskDetails.billing_month >= date(year, 1, 1),
+                   CollectionTaskDetails.billing_month < date(year + 1, 1, 1))
+            .group_by(CollectionTaskDetails.billing_month)
+        )
+        return {month: count for month, count in (await self.db.execute(q)).all()}
+
     async def unread_summary(self, user_id: int) -> tuple[int, int]:
         """Unread chat messages on non-archived collection tasks the user is
         tied to — the same recipient rule as the regular /tasks/unread-summary

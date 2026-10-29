@@ -4,6 +4,7 @@ import {
   Archive,
   ArchiveRestore,
   CalendarClock,
+  FileDown,
   FileText,
   History,
   MessageCircle,
@@ -24,6 +25,7 @@ import SearchableSelect from '../task-management/SearchableSelect'
 import CollectionAmountsPanel from './CollectionAmountsPanel'
 import CollectionChat from './CollectionChat'
 import CollectionHistory from './CollectionHistory'
+import StatementExportModal from './StatementExportModal'
 import CollectionModal, { ErrorBanner, Field, PrimaryButton, SecondaryButton } from './CollectionModal'
 import {
   COLLECTION_STATUSES,
@@ -32,6 +34,7 @@ import {
   COLLECTION_TYPE_LABELS,
   FIELD_CLASS,
   collectionErrorMessage,
+  displayCollectionTitle,
   formatILS,
   formatMonth,
   toMonthKey,
@@ -147,7 +150,7 @@ export default function CollectionTaskDetailModal({ taskId, onClose, onChanged }
       isOpen={taskId != null}
       onClose={onClose}
       icon={Wallet}
-      title={task?.title ?? 'משימת גבייה'}
+      title={task ? displayCollectionTitle(task) : 'משימת גבייה'}
       subtitle={task && (
         <span className="flex flex-wrap items-center gap-1.5">
           <span>{task.project.parent_name ? `${task.project.parent_name} › ` : ''}{task.project.name}</span>
@@ -221,6 +224,7 @@ interface DetailsTabProps {
 function DetailsTab({ task, can, busy, apply }: DetailsTabProps) {
   const [editing, setEditing] = useState(false)
   const [moving, setMoving] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   const setStatus = (status: CollectionStatus) => {
     if (status === task.status) return
@@ -294,12 +298,19 @@ function DetailsTab({ task, can, busy, apply }: DetailsTabProps) {
         {can.canArchive && (
           <ActionButton icon={Archive} onClick={archive} disabled={busy}>העבר לארכיון</ActionButton>
         )}
+        {task.collection_type === 'ledger' && (
+          <ActionButton icon={FileDown} onClick={() => setExporting(true)} disabled={busy}>ייצוא ל־PDF</ActionButton>
+        )}
         {can.canUnarchive && (
           <ActionButton icon={ArchiveRestore} onClick={() => void apply(() => CollectionAPI.unarchive(task.id), 'השחזור נכשל')} disabled={busy}>
             שחזור מארכיון
           </ActionButton>
         )}
       </div>
+      {/* The statement exists for ledgers only (the server rejects any other type). */}
+      {exporting && task.collection_type === 'ledger' && (
+        <StatementExportModal task={task} isOpen onClose={() => setExporting(false)} />
+      )}
     </div>
   )
 }
