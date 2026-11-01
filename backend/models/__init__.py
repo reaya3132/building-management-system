@@ -24,6 +24,7 @@ from backend.models.quote_project import QuoteProject
 from backend.models.quote_line import QuoteLine
 from backend.models.task import Task, TaskLabel, TaskAttachment, TaskParticipant, TaskMessage, TaskMessageRead
 from backend.models.collection_task import CollectionTaskDetails, CollectionAmountAdjustment, CollectionLedgerItem
+from backend.models.project_note import ProjectNote
 from backend.models.user_notification import UserNotification
 from backend.models.outlook_sync import OutlookSync
 from backend.models.quote_building import QuoteBuilding, QuoteApartment
@@ -78,6 +79,7 @@ __all__ = [
     "TaskMessage",
     "TaskMessageRead",
     "CollectionTaskDetails",
+    "ProjectNote",
     "CollectionAmountAdjustment",
     "CollectionLedgerItem",
     "UserNotification",
