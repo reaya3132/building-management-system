@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, type ReactNode } from 'react'
 import { FileText } from 'lucide-react'
 import { UnforeseenTransaction } from '../../../types/api'
 
@@ -14,6 +14,8 @@ interface FundAndUnforeseenPanelProps {
   onResetUnforeseenForm: () => void
   onViewUnforeseenTransaction?: (tx: UnforeseenTransaction) => void
   onShowDeleteFundModal?: () => void
+  /** Rendered directly below the fund card (e.g. the fund documentation board). */
+  fundNotes?: ReactNode
 }
 
 export default function FundAndUnforeseenPanel({
@@ -27,7 +29,8 @@ export default function FundAndUnforeseenPanel({
   onShowCreateUnforeseenTransactionModal,
   onResetUnforeseenForm,
   onViewUnforeseenTransaction,
-  onShowDeleteFundModal
+  onShowDeleteFundModal,
+  fundNotes
 }: FundAndUnforeseenPanelProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [needsScrolling, setNeedsScrolling] = useState(false)
@@ -112,6 +115,11 @@ export default function FundAndUnforeseenPanel({
           <div className="fund-panel-empty text-center py-2 text-gray-500 dark:text-gray-400 text-fluid-sm">אין קופה</div>
         )}
       </div>
+
+      {/* Optional content right below the fund card (the fund documentation board) */}
+      {fundNotes && (
+        <div className="fund-notes-slot flex-shrink-0">{fundNotes}</div>
+      )}
 
       {/* Unforeseen */}
       <div className="unforeseen-panel-card project-detail-card bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-3 flex flex-col flex-1 min-h-0 min-w-0">
