@@ -101,8 +101,13 @@ class S3Service:
             logger.error("יצירת קישור חתום ל-S3 נכשלה (key=%s): %s", key, e, exc_info=True)
             return file_key
 
-    def delete_file(self, file_key: str) -> None:
-        """Delete a file from S3 given its URL"""
+    def delete_file(self, file_key: str, *, raise_errors: bool = False) -> None:
+        """Delete a file from S3 given its URL.
+
+        Failures are logged and swallowed by default (existing callers). With
+        ``raise_errors=True`` the error is re-raised after logging, for callers
+        that must record the failure (e.g. legal documents' cleanup trail).
+        """
         key = file_key
         if not key:
             # In this case, we can't delete from S3, so we'll just skip
@@ -112,6 +117,8 @@ class S3Service:
             self._s3.delete_object(Bucket=self._bucket, Key=key)
         except Exception as e:
             logger.error("מחיקת קובץ מ-S3 נכשלה (key=%s): %s", key, e, exc_info=True)
+            if raise_errors:
+                raise
 
     def get_file_content(self, file_key: str) -> bytes | None:
         if not file_key:
