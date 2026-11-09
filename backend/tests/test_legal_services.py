@@ -33,6 +33,7 @@ from backend.services.contact_service import ContactService
 from backend.services.legal_assignee_service import LegalAssigneeService
 from backend.services.legal_document_service import LegalDocumentService
 from backend.services.legal_entry_service import LegalEntryService
+from backend.services.contact_service import normalize_phone
 from backend.services.legal_proceeding_service import LegalProceedingService
 from backend.services.legal_stage_service import LegalStageService
 
@@ -122,11 +123,12 @@ async def team(test_db, admin_user):
 
 
 async def open_proceeding(db, user, *, contact_id=None, project_id=None, **values):
-    payload = {"party_role": "tenant", "title": "חוב ועד בית", **values}
+    payload = {"party_role": "other", "apartment_number": "4", "title": "חוב ועד בית", **values}
     if project_id is not None:
         payload["project_id"] = project_id
-    new_contact = None if contact_id else {"kind": "person", "name": "דייר א", "phone": "050-1"}
-    result = await LegalProceedingService(db, user).create(payload, contact_id=contact_id, new_contact=new_contact)
+    contact = {"contact_id": contact_id} if contact_id else {"details": {
+        "kind": "person", "name": "דייר א", "phone": "050-1111111", "email": "p@example.com", "address": "רחוב 1"}}
+    result = await LegalProceedingService(db, user).create(payload, contact=contact, confirm_duplicate_contact=True)
     await db.commit()
     return result
 
@@ -224,29 +226,99 @@ async def test_assignment_rules(team, test_db):
 
 # ── open / edit / close / reopen ──────────────────────────────────────────────
 
-async def test_create_builds_stages_and_warns_about_open_proceedings(team):
+async def test_create_builds_stages_and_never_blocks_other_roles(team):
     db, lawyer, admin = team["db"], team["lawyer"], team["admin"]
     first = await open_proceeding(db, admin, claim_amount="1250.50")
-    assert first.open_proceedings == []
     assert first.proceeding.claim_amount == Decimal("1250.50")
     stages = (await db.execute(select(LegalProceedingStage.stage_key, LegalProceedingStage.status)
                                 .where(LegalProceedingStage.proceeding_id == first.proceeding.id))).all()
     assert sorted(stages) == sorted((k, "pending") for k in STAGE_KEYS)
 
-    # Second proceeding of the same contact by another user: warned, not blocked —
-    # even though the first one is not visible to them.
+    # Only a tenant's proceeding is subject to the open-proceeding warning.
     second = await open_proceeding(db, lawyer, contact_id=first.contact.id, claim_amount=300)
-    assert [r.proceeding.id for r in second.open_proceedings] == [first.proceeding.id]
     assert second.proceeding.id != first.proceeding.id
     assert await actions(db, second.proceeding.id) == ["proceeding_created"]
 
 
-async def test_create_new_contact_warns_about_similar_contacts(team):
+async def test_landlord_rules_and_immutable_parties(team):
+    db, lawyer = team["db"], team["lawyer"]
+    landlord = (await open_proceeding(db, lawyer, party_role="landlord")).contact
+    svc = LegalProceedingService(db, lawyer)
+    new = {"contact": {"details": {"kind": "person", "name": "דייר ב", "phone": "050-2222222", "email": "p@example.com", "address": "רחוב 1"}}}
+    base = {"party_role": "tenant", "apartment_number": "4", "title": "t"}
+    for values, kwargs, code in (
+        (base, {}, "landlord_required"),
+        ({**base, "party_role": "supplier"}, {"landlord": {"contact_id": landlord.id}}, "landlord_not_allowed"),
+        ({**base, "apartment_number": "  "}, {"landlord": {"contact_id": landlord.id}}, "apartment_number_required"),
+        (base, {"landlord": {"contact_id": 9999}}, "contact_not_found"),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await svc.create(values, **new, **kwargs)
+        assert exc.value.detail["code"] == code
+    created = await svc.create(base, **new, landlord={"contact_id": landlord.id}, confirm_duplicate_contact=True)
+    await db.commit()
+    assert created.proceeding.landlord_id == landlord.id
+    for field, value in (("party_role", "other"), ("landlord_contact_id", landlord.id), ("contact_id", landlord.id)):
+        with pytest.raises(HTTPException) as exc:
+            await svc.update(created.proceeding.id, {field: value})
+        assert exc.value.detail["code"] == "contact_immutable"
+
+
+async def test_duplicate_phone_blocks_a_new_contact_until_confirmed(team):
     db, lawyer = team["db"], team["lawyer"]
     await open_proceeding(db, lawyer)
-    again = await LegalProceedingService(db, lawyer).create(
-        {"party_role": "owner", "title": "t"}, new_contact={"kind": "person", "name": "Someone", "phone": "050-1"})
-    assert [c.name for c in again.similar_contacts] == ["דייר א"]
+    svc = LegalProceedingService(db, lawyer)
+    values = {"party_role": "landlord", "apartment_number": "5", "title": "t"}
+    details = {"kind": "person", "name": "Someone", "phone": "+972 50-111-1111", "email": "p@example.com", "address": "רחוב 1"}
+    with pytest.raises(HTTPException) as exc:
+        await svc.create(values, contact={"details": details})
+    assert exc.value.status_code == 409 and exc.value.detail["code"] == "duplicate_phone"
+    assert set(exc.value.detail) == {"code", "message", "has_match"}
+    same_phone = await svc.create(values, contact={"details": details}, confirm_duplicate_contact=True)
+    assert same_phone.has_match is True
+    same_name = await svc.create(values, contact={"details": {**details, "name": "דייר א", "phone": "050-9999999"}})
+    assert same_name.has_match is False  # names are not compared
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("050-1234567", "0501234567"), ("050 123 4567", "0501234567"), ("(050)1234567", "0501234567"),
+    ("+972501234567", "0501234567"), ("+972-50-1234567", "0501234567"), ("00972501234567", "0501234567"),
+    ("972501234567", "0501234567"), ("+972 050 1234567", "0501234567"), ("03-1234567", "031234567"),
+    ("+1 (212) 555-0123", "12125550123"), ("001 212 555 0123", "12125550123"),
+])
+def test_normalize_phone(raw, expected):
+    assert normalize_phone(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["12345", "abc", "050-12345x7", "05+01234567", "1" * 16, "*2000"])
+def test_normalize_phone_rejects(raw):
+    with pytest.raises(HTTPException) as exc:
+        normalize_phone(raw)
+    assert exc.value.status_code == 422 and exc.value.detail["code"] == "invalid_phone"
+
+
+async def test_phones_are_stored_normalized_and_every_combination_matches(team):
+    db, lawyer = team["db"], team["lawyer"]
+    contacts = ContactService(db, lawyer)
+    made = (await contacts.create({"kind": "person", "name": "א", "phone": "050-1000001", "phone_2": "+972 52 1000002"})).contact
+    await db.commit()
+    assert (made.phone, made.phone_2) == ("0501000001", "0521000002")
+    for phone, phone_2 in (("0501000001", None), ("0521000002", None), ("0599999999", "050 100 0001"),
+                           ("0599999999", "+972521000002")):
+        assert await contacts.has_duplicate(phone, phone_2) is True, (phone, phone_2)
+    assert await contacts.has_duplicate("0599999999", "0588888888") is False
+    assert await contacts.has_duplicate("0501000001", exclude_id=made.id) is False
+    assert [c.id for c in await contacts.search("050-100")] == [made.id]
+    assert [c.id for c in await contacts.search("+972 52")] == [made.id]
+    admin_contacts = ContactService(db, team["admin"])  # editing needs visibility; Admin sees all
+    updated = await admin_contacts.update(made.id, {"phone_2": "(054) 1000003"})
+    assert updated.phone_2 == "0541000003"
+    with pytest.raises(HTTPException) as exc:
+        await admin_contacts.update(made.id, {"phone": "12"})
+    assert exc.value.detail["code"] == "invalid_phone"
+    made.is_active = False
+    await db.flush()
+    assert await contacts.has_duplicate("0501000001") is False  # inactive contacts are not matched
 
 
 @pytest.mark.parametrize("values, code", [
@@ -267,7 +339,7 @@ async def test_update_close_reopen(team):
     db, lawyer = team["db"], team["lawyer"]
     pid = (await open_proceeding(db, lawyer)).proceeding.id
     svc = LegalProceedingService(db, lawyer)
-    await svc.update(pid, {"claim_amount": "99.90", "unit_label": "דירה 4"})
+    await svc.update(pid, {"claim_amount": "99.90", "apartment_number": "דירה 7"})
     with pytest.raises(HTTPException) as exc:
         await svc.update(pid, {"contact_id": 5})
     assert code_of(exc) == "contact_immutable"
@@ -289,7 +361,7 @@ async def test_update_close_reopen(team):
     assert await actions(db, pid) == ["proceeding_created", "proceeding_updated", "proceeding_closed",
                                       "proceeding_reopened"]
     upd = await last_details(db, pid, "proceeding_updated")
-    assert upd["after"] == {"unit_label": "דירה 4", "claim_amount": "99.90"}
+    assert upd["after"] == {"apartment_number": "דירה 7", "claim_amount": "99.90"}
     reo = await last_details(db, pid, "proceeding_reopened")
     assert reo["previous_close"]["close_reason"] == "שולם במלואו"
     logs, total = await svc.history(pid)
@@ -624,12 +696,12 @@ async def test_contacts(team):
     with pytest.raises(HTTPException) as exc:  # search needs write (used while opening)
         await ContactService(db, helper).search("x")
     assert exc.value.status_code == 403
-    updated = await contacts.update(created.contact.id, {"email": " A@B.co ", "phone_2": ""})
+    updated = await ContactService(db, team["admin"]).update(created.contact.id, {"email": " A@B.co ", "phone_2": ""})
     await db.commit()
     assert (updated.email, updated.phone_2) == ("a@b.co", None)
     row = (await db.execute(select(AuditLog.details).where(AuditLog.entity == "contact",
                                                            AuditLog.action == "updated"))).scalar_one()
-    assert json.loads(row) == {"before": {"email": None}, "after": {"email": "a@b.co"}}
+    assert json.loads(row) == {"before": {"email": "p@example.com"}, "after": {"email": "a@b.co"}}
     with pytest.raises(HTTPException) as exc:
-        await contacts.update(created.contact.id, {"kind": "alien"})
+        await ContactService(db, team["admin"]).update(created.contact.id, {"kind": "alien"})
     assert code_of(exc) == "invalid_contact_kind"

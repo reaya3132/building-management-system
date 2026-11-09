@@ -2,6 +2,10 @@
 Pytest configuration and fixtures for backend tests.
 Uses in-memory SQLite so no real PostgreSQL connection is needed.
 """
+import os
+
+os.environ.setdefault("ENVIRONMENT", "test")  # before any backend import: no external alerts
+
 import pytest
 import pytest_asyncio
 from typing import AsyncGenerator

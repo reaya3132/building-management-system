@@ -5,7 +5,8 @@
 -- by those files — or module tables that create_all provisioned first and that the
 -- migration ADOPTED after verifying they match the expected definition exactly. Any
 -- marked table is dropped only after the data check and the dependency check below:
---   * the five module tables (a table without the marker is kept, with a NOTICE);
+--   * the four module tables (a table without the marker is kept, with a NOTICE);
+--     public.contacts is a general table and is never touched;
 --   * ix_documents_entity_context;
 --   * documents.context_key — only when add_legal_proceedings.sql added it. A column
 --     that already existed (e.g. created by create_all on a fresh database) is kept.
@@ -13,7 +14,7 @@
 -- 'legal_proceeding'). audit_logs history is kept.
 --
 -- It STOPS without changing anything when:
---   * any module table holds rows (proceedings, contacts, stages, entries, assignees);
+--   * any module table holds rows (proceedings, stages, entries, assignees);
 --   * documents holds legal documents (entity_type 'legal_proceeding' / 'legal_proceeding_entry')
 --     — their S3 files must be removed first (backend/scripts/legal_storage_cleanup.py);
 --   * documents.context_key is marked as ours but other modules' rows use it;
@@ -36,7 +37,7 @@ DECLARE
     col_ours boolean;
 BEGIN
     FOREACH t IN ARRAY ARRAY['legal_proceeding_assignees', 'legal_proceeding_entries',
-                             'legal_proceeding_stages', 'legal_proceedings', 'contacts'] LOOP
+                             'legal_proceeding_stages', 'legal_proceedings'] LOOP
         IF to_regclass('public.' || t) IS NOT NULL THEN
             EXECUTE format('SELECT count(*) FROM public.%I', t) INTO n;
             IF n > 0 THEN
@@ -76,7 +77,7 @@ BEGIN
     WITH owned AS (
         SELECT c.oid FROM pg_class c
          WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'
-           AND c.relname IN ('contacts', 'legal_proceedings', 'legal_proceeding_stages',
+           AND c.relname IN ('legal_proceedings', 'legal_proceeding_stages',
                              'legal_proceeding_entries', 'legal_proceeding_assignees')
            AND coalesce(obj_description(c.oid, 'pg_class'), '') = marker
     ), ctx AS (
@@ -129,7 +130,7 @@ DECLARE
     t text;
 BEGIN
     FOREACH t IN ARRAY ARRAY['legal_proceeding_assignees', 'legal_proceeding_entries',
-                             'legal_proceeding_stages', 'legal_proceedings', 'contacts'] LOOP
+                             'legal_proceeding_stages', 'legal_proceedings'] LOOP
         IF to_regclass('public.' || t) IS NULL THEN
             CONTINUE;
         ELSIF coalesce(obj_description(to_regclass('public.' || t), 'pg_class'), '') = marker THEN

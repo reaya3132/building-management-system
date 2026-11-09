@@ -33,19 +33,12 @@ from backend.models.legal_proceeding import (
 )
 from backend.models.user import User
 from backend.repositories.legal_proceeding_repository import LegalProceedingRepository
+from backend.repositories.user_repository import UserRepository
 from backend.services.audit_service import AuditService
-from backend.services.legal_access import LegalAccess, changed_fields, legal_error
+from backend.services.legal_access import changed_fields, clean_text, legal_error, LegalAccess, utc_now
 from backend.services.legal_document_service import LegalDocumentService, document_snapshot
 
 _UNSET = object()
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def _content(value) -> str | None:
-    return (str(value).strip() or None) if value is not None else None
 
 
 def _naive_utc(value: datetime | None) -> datetime | None:
@@ -126,12 +119,12 @@ class LegalEntryService:
                      occurred_at: datetime | None = None, files: list[UploadFile] | None = None) -> EntryView:
         files = [f for f in (files or []) if f is not None]
         await self.access.load(proceeding_id, Action.UPDATE.value, require_open=True)
-        data = self._validated_new(entry_type, stage_key, context_key, _content(content), channel,
+        data = self._validated_new(entry_type, stage_key, context_key, clean_text(content), channel,
                                    _naive_utc(occurred_at), bool(files))
         stored = await self.documents.store_files(proceeding_id, files) if files else []
         try:
             entry = LegalProceedingEntry(proceeding_id=proceeding_id, created_by_user_id=self.user.id,
-                                         created_at=_now(), **data)
+                                         created_at=utc_now(), **data)
             await self.repo.add(entry)
             await self._log(proceeding_id, LegalEvent.ENTRY_CREATED, {"after": entry_snapshot(entry)})
             docs = await self.documents.add_document_rows(proceeding_id, stored, entity_type=LEGAL_ENTRY_DOCUMENT_ENTITY,
@@ -140,8 +133,7 @@ class LegalEntryService:
             if stored:
                 await self.documents.undo_upload(stored)
             raise
-        if stored:
-            await self.documents.commit_upload(stored)
+        await self.documents.commit_upload(stored)  # with or without files: the one commit of this operation
         return (await self._views(proceeding_id, [entry], {entry.id: docs}))[0]
 
     # ── update ───────────────────────────────────────────────────────────────
@@ -156,7 +148,7 @@ class LegalEntryService:
         await self.access.require_change_authored(entry.created_by_user_id)
         before = entry_snapshot(entry)
         if content is not _UNSET:
-            entry.content = _content(content)
+            entry.content = clean_text(content)
             if entry.content is None:
                 if entry.entry_type == EntryType.NOTE:
                     raise legal_error(422, "content_required", "A note requires content")
@@ -173,7 +165,7 @@ class LegalEntryService:
                 raise legal_error(422, "occurred_at_required", "A communication record requires its date")
         old, new = changed_fields(before, entry_snapshot(entry), ("content", "channel", "occurred_at"))
         if new:
-            entry.updated_by_user_id, entry.updated_at = self.user.id, _now()
+            entry.updated_by_user_id, entry.updated_at = self.user.id, utc_now()
             await self.db.flush()
             await self._log(proceeding_id, LegalEvent.ENTRY_UPDATED,
                             {"entry_id": entry.id, "before": old, "after": new})
@@ -213,7 +205,7 @@ class LegalEntryService:
             docs = await self.repo.documents_for_entries([e.id for e in entries])
         doc_views = {v.document.id: v for v in await self.documents.views(
             proceeding_id, [d for ds in docs.values() for d in ds])} if any(docs.values()) else {}
-        users = await self.repo.users_by_id(
+        users = await UserRepository(self.db).users_by_id(
             [e.created_by_user_id for e in entries] + [e.updated_by_user_id for e in entries])
         can_delete_others = await self.access.allowed(Action.DELETE.value)
         return [EntryView(e, [doc_views[d.id] for d in docs.get(e.id, [])], users.get(e.created_by_user_id),

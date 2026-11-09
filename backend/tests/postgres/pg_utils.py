@@ -26,12 +26,14 @@ DSN_ENV = "TEST_POSTGRES_URL"
 DSN = os.environ.get(DSN_ENV)
 DB_PREFIX = "legal_test_"
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
+CONTACTS_MIGRATION = MIGRATIONS / "add_contacts.sql"
 MIGRATION = MIGRATIONS / "add_legal_proceedings.sql"
 INDEX_MIGRATION = MIGRATIONS / "add_legal_proceedings_indexes_concurrently.sql"
 ROLLBACK = MIGRATIONS / "rollback_legal_proceedings.sql"
 MARKER = "owner:add_legal_proceedings"
 LEGAL_TABLES = ("contacts", "legal_proceedings", "legal_proceeding_stages",
                 "legal_proceeding_entries", "legal_proceeding_assignees")
+MODULE_TABLES = LEGAL_TABLES[1:]  # contacts is a general table with its own migration
 
 
 def dsn_for(db: str) -> str:
@@ -110,9 +112,12 @@ async def create_all(db: str, *, include_legal: bool) -> None:
 
 
 async def production_like(db: str, *, seed_documents: bool = True) -> str:
-    """Fresh database with today's production schema (+ 2,000 existing documents)."""
+    """Fresh database with today's production schema (+ 2,000 existing documents),
+    contacts applied by its own migration."""
     await create_db(db)
     await create_all(db, include_legal=False)
+    run = await run_sql_file(db, CONTACTS_MIGRATION)
+    assert run.ok, run.error
     if seed_documents:
         await execute(db, """
             INSERT INTO documents (entity_type, entity_id, file_path, file_name, description,
@@ -259,4 +264,4 @@ async def context_key_marker(db: str) -> str | None:
 
 async def legal_tables_present(db: str) -> int:
     return await query(db, "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace "
-                           "AND relkind = 'r' AND relname = ANY($1::text[])", list(LEGAL_TABLES))
+                           "AND relkind = 'r' AND relname = ANY($1::text[])", list(MODULE_TABLES))

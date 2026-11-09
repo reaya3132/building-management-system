@@ -10,6 +10,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from backend.configurations.legal import stages as catalogue
@@ -60,16 +61,18 @@ def test_component_validation_and_document_context_key():
 
 @pytest_asyncio.fixture
 async def base(test_db, admin_user):
-    contact = Contact(kind="person", name="ישראל ישראלי")
-    test_db.add(contact)
+    contact = Contact(kind="person", name="ישראל ישראלי", phone="0501111111")
+    landlord = Contact(kind="person", name="בעל דירה", phone="0502222222")
+    test_db.add_all([contact, landlord])
     await test_db.flush()
-    proc = LegalProceeding(contact_id=contact.id, party_role="tenant", title="חוב ועד בית", created_by=admin_user.id)
+    proc = LegalProceeding(contact_id=contact.id, landlord_contact_id=landlord.id, party_role="tenant",
+                           apartment_number="4", title="חוב ועד בית", created_by=admin_user.id)
     test_db.add(proc)
     await test_db.flush()
     for key in catalogue.STAGE_KEYS:
         test_db.add(LegalProceedingStage(proceeding_id=proc.id, stage_key=key))
     await test_db.commit()
-    return {"db": test_db, "user": admin_user, "contact": contact, "proc": proc}
+    return {"db": test_db, "user": admin_user, "contact": contact, "landlord": landlord, "proc": proc}
 
 
 async def _accepts(db, obj):
@@ -95,9 +98,11 @@ def _entry(base, **kw):
 @pytest.mark.asyncio
 async def test_contact_constraints(base):
     db = base["db"]
-    await _rejects(db, Contact(kind="robot", name="x"))
-    await _rejects(db, Contact(kind="person", name="   "))
-    await _accepts(db, Contact(kind="business", name="חברת ניהול בע\"מ"))
+    await _rejects(db, Contact(kind="robot", name="x", phone="1"))
+    await _rejects(db, Contact(kind="person", name="   ", phone="1"))
+    await _rejects(db, Contact(kind="person", name="x"))          # phone is required
+    await _rejects(db, Contact(kind="person", name="x", phone="  "))
+    await _accepts(db, Contact(kind="business", name="חברת ניהול בע\"מ", phone="1"))  # email, address optional
 
 
 @pytest.mark.asyncio
@@ -105,7 +110,7 @@ async def test_proceeding_amount_and_close_constraints(base):
     db, user, contact = base["db"], base["user"], base["contact"]
 
     def proc(**kw):
-        values = dict(contact_id=contact.id, party_role="owner", title="t", created_by=user.id)
+        values = dict(contact_id=contact.id, party_role="landlord", apartment_number="4", title="t", created_by=user.id)
         values.update(kw)
         return LegalProceeding(**values)
 
@@ -127,9 +132,40 @@ async def test_proceeding_amount_and_close_constraints(base):
 
 
 @pytest.mark.asyncio
+async def test_party_landlord_and_apartment_constraints(base):
+    db, user, contact, landlord = base["db"], base["user"], base["contact"], base["landlord"]
+
+    def proc(**kw):
+        return LegalProceeding(**{**dict(contact_id=contact.id, apartment_number="4", title="t", created_by=user.id), **kw})
+
+    await _accepts(db, proc(party_role="tenant", landlord_contact_id=landlord.id))
+    await _rejects(db, proc(party_role="tenant"))                 # a tenant needs a landlord
+    for role in ("landlord", "supplier", "other"):
+        await _accepts(db, proc(party_role=role))
+        await _rejects(db, proc(party_role=role, landlord_contact_id=landlord.id))
+    await _rejects(db, proc(party_role="owner"))                  # the old value is gone
+    await _rejects(db, proc(party_role="other", apartment_number=None))
+    await _rejects(db, proc(party_role="other", apartment_number="  "))
+
+
+@pytest.mark.asyncio
+async def test_landlord_id_in_python_and_sql(base):
+    db, user, landlord = base["db"], base["user"], base["landlord"]
+    tenant_case = base["proc"]
+    other = LegalProceeding(contact_id=landlord.id, party_role="landlord", apartment_number="9", title="t", created_by=user.id)
+    await _accepts(db, other)
+    assert tenant_case.landlord_id == landlord.id and other.landlord_id is None
+    rows = dict((await db.execute(select(LegalProceeding.id, LegalProceeding.landlord_id))).all())
+    assert rows == {tenant_case.id: landlord.id, other.id: None}
+    found = (await db.execute(select(LegalProceeding.id).where(LegalProceeding.linked_to_landlord(landlord.id)))).scalars().all()
+    assert found == [tenant_case.id]        # a landlord who is the primary contact is not "linked"
+
+
+@pytest.mark.asyncio
 async def test_stage_constraints(base):
     db, user, proc = base["db"], base["user"], base["proc"]
-    other = LegalProceeding(contact_id=base["contact"].id, party_role="other", title="t2", created_by=user.id)
+    other = LegalProceeding(contact_id=base["contact"].id, party_role="other", apartment_number="4", title="t2",
+                            created_by=user.id)
     await _accepts(db, other)
     await _rejects(db, LegalProceedingStage(proceeding_id=proc.id, stage_key=catalogue.STAGE1_KEY))  # unique
     await _rejects(db, LegalProceedingStage(proceeding_id=other.id, stage_key="a", status="done"))

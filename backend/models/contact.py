@@ -33,8 +33,10 @@ class Contact(Base):
     __table_args__ = (
         CheckConstraint("kind IN ('person', 'business')", name="ck_contacts_kind"),
         CheckConstraint("trim(name) <> ''", name="ck_contacts_name"),
+        CheckConstraint("trim(phone) <> ''", name="ck_contacts_phone"),
         Index("ix_contacts_name", "name"),
         Index("ix_contacts_phone", "phone"),
+        Index("ix_contacts_phone_2", "phone_2"),
         Index("ix_contacts_email", "email"),
     )
 
@@ -42,7 +44,7 @@ class Contact(Base):
     kind: Mapped[str] = mapped_column(String(20), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    phone: Mapped[str] = mapped_column(String(50), nullable=False)
     phone_2: Mapped[str | None] = mapped_column(String(50), nullable=True)
     address: Mapped[str | None] = mapped_column(String(500), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

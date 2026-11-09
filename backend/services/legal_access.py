@@ -14,21 +14,36 @@ deleting someone else's requires the IAM ``delete`` action.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.iam.engine import PermissionsEngine
-from backend.iam.enums import Action, ResourceType
+from backend.iam.enums import Action, GlobalRole, ResourceType
 from backend.models.legal_proceeding import LegalProceeding, ProceedingStatus
-from backend.models.user import UserRole
 from backend.repositories.legal_proceeding_repository import LegalProceedingRepository
 
 RESOURCE = ResourceType.LEGAL_PROCEEDING.value
 
 
+def utc_now() -> datetime:
+    """Naive UTC, the module's storage convention."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def legal_error(status_code: int, code: str, message: str, **extra) -> HTTPException:
     """Business-rule errors carry a stable ``code`` the client can translate."""
     return HTTPException(status_code=status_code, detail={"code": code, "message": message, **extra})
+
+
+def clean_text(value, *, limit: int | None = None, field_name: str = "") -> str | None:
+    """Trimmed text; blank becomes None. ``limit`` rejects longer values."""
+    if value is None:
+        return None
+    value = str(value).strip()
+    if limit and len(value) > limit:
+        raise legal_error(422, "value_too_long", f"{field_name} is longer than {limit} characters", field=field_name)
+    return value or None
 
 
 def changed_fields(before: dict, after: dict, keys=None) -> tuple[dict, dict]:
@@ -39,8 +54,8 @@ def changed_fields(before: dict, after: dict, keys=None) -> tuple[dict, dict]:
 
 
 def is_admin(user) -> bool:
-    """Same Admin test as the tasks module (``task_access``)."""
-    return getattr(user, "role", None) == UserRole.ADMIN.value
+    """Admin or the higher SuperAdmin, the same two roles as ``core.deps.require_admin``."""
+    return getattr(user, "role", None) in (GlobalRole.ADMIN.value, GlobalRole.SUPER_ADMIN.value)
 
 
 class LegalAccess:

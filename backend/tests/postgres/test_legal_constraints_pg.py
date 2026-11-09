@@ -8,7 +8,8 @@ from datetime import datetime
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 
 from backend.tests.test_legal_models import *  # noqa: F401,F403  (same matrix, PostgreSQL engine)
@@ -37,7 +38,8 @@ async def _restricts(db, sql, params):
 async def test_composite_stage_fk(base):
     db, user = base["db"], base["user"]
     # A second proceeding that has only stage 1.
-    other = LegalProceeding(contact_id=base["contact"].id, party_role="other", title="x", created_by=user.id)
+    other = LegalProceeding(contact_id=base["contact"].id, party_role="other", apartment_number="4", title="x",
+                            created_by=user.id)
     await _accepts(db, other)
     await _accepts(db, LegalProceedingStage(proceeding_id=other.id, stage_key=STAGE1_KEY))
     # stage of the same proceeding: ok; general entry (NULL stage): ok
@@ -82,7 +84,7 @@ async def test_contact_created_by_set_null(base):
     tmp = User(email="tmp@x.io", full_name="T", password_hash="x", role="Member", is_active=True)
     db.add(tmp)
     await db.flush()
-    c = Contact(kind="person", name="n", created_by=tmp.id)
+    c = Contact(kind="person", name="n", phone="1", created_by=tmp.id)
     db.add(c)
     await db.commit()
     await db.execute(text("DELETE FROM users WHERE id = :i"), {"i": tmp.id})
@@ -107,3 +109,17 @@ async def test_resolved_and_closed_rules_with_real_users(base):
             await db.execute(text("UPDATE legal_proceedings SET status='closed', closed_at=now(), "
                                   "closed_by=:u, close_reason='paid' WHERE id=:i"), {"u": user.id, "i": proc.id})
             await db.execute(text("UPDATE legal_proceedings SET status='open' WHERE id=:i"), {"i": proc.id})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_status", [True, False])
+async def test_linked_to_landlord_can_use_the_partial_index(base, with_status):
+    db = base["db"]
+    stmt = select(LegalProceeding.id).where(LegalProceeding.linked_to_landlord(base["landlord"].id))
+    if with_status:
+        stmt = stmt.where(LegalProceeding.status == "open")
+    sql = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    await db.execute(text("SET LOCAL enable_seqscan = off"))
+    plan = "\n".join((await db.execute(text(f"EXPLAIN {sql}"))).scalars())
+    await db.rollback()
+    assert "ix_lp_landlord_status" in plan, plan

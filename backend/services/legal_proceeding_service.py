@@ -10,7 +10,7 @@ reopened, never deleted. Every public method runs in the request's transaction
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.configurations.legal.stages import STAGE_KEYS, StageDefinition, STAGES
 from backend.iam.enums import Action
 from backend.models.contact import Contact
+from backend.models.user import User
 from backend.models.legal_proceeding import (
     LEGAL_PROCEEDING_AUDIT_ENTITY,
     LegalEvent,
@@ -29,6 +30,7 @@ from backend.models.legal_proceeding import (
 )
 from backend.repositories.contact_repository import ContactRepository
 from backend.repositories.project_repository import ProjectRepository
+from backend.repositories.user_repository import UserRepository
 from backend.repositories.legal_proceeding_repository import (
     LegalProceedingRepository,
     ProceedingFilters,
@@ -37,23 +39,14 @@ from backend.repositories.legal_proceeding_repository import (
 )
 from backend.services.audit_service import AuditService
 from backend.services.contact_service import ContactService
-from backend.services.legal_access import LegalAccess, changed_fields, legal_error
+from backend.services.legal_access import changed_fields, clean_text, is_admin, legal_error, LegalAccess, utc_now
 
-EDITABLE_FIELDS = ("party_role", "unit_label", "title", "claim_details", "claim_amount", "project_id")
+IMMUTABLE_PARTY_FIELDS = ("contact_id", "party_role", "landlord_contact_id")
+# Required on every party of a proceeding (contacts themselves only require name and phone).
+REQUIRED_PARTY_FIELDS = ("name", "phone", "email", "address")
+INCOMPLETE_CARD_MESSAGE = "חסרים פרטי חובה בכרטיס איש הקשר. יש לפנות למנהל להשלמת הפרטים."
+OPEN_PROCEEDING_WARNING = "לאיש קשר זה כבר קיים הליך משפטי פתוח. האם להמשיך?"
 _MAX_AMOUNT = Decimal("999999999999.99")  # NUMERIC(14, 2)
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def _text(value, *, limit: int | None = None, field_name: str = "") -> str | None:
-    if value is None:
-        return None
-    value = str(value).strip()
-    if limit and len(value) > limit:
-        raise legal_error(422, "value_too_long", f"{field_name} is longer than {limit} characters", field=field_name)
-    return value or None
 
 
 def _amount(value) -> Decimal | None:
@@ -78,7 +71,7 @@ def _audit_value(value):
 
 def snapshot(p: LegalProceeding) -> dict:
     return {k: _audit_value(getattr(p, k)) for k in (
-        "contact_id", "project_id", "party_role", "unit_label", "title", "claim_details", "claim_amount",
+        "contact_id", "project_id", "party_role", "landlord_contact_id", "apartment_number", "title", "claim_details", "claim_amount",
         "status", "opened_at", "closed_at", "closed_by", "close_reason")}
 
 
@@ -114,11 +107,25 @@ class ProceedingListItem:
 
 
 @dataclass
+class ProceedingDetail:
+    proceeding: LegalProceeding
+    contact: Contact
+    linked_landlord: Contact | None   # only in a tenant's proceeding
+    project_name: str | None
+    stages: list[tuple[StageDefinition, LegalProceedingStage]]
+    progress: Progress
+    assignee_ids: list[int]
+    users: dict[int, User]          # creator, closer, stage resolvers
+    can_update: bool
+    can_assign: bool
+    can_delete_others: bool
+
+
+@dataclass
 class CreateResult:
     proceeding: LegalProceeding
     contact: Contact
-    open_proceedings: list[ProceedingRow]   # the warning: other open proceedings of the contact
-    similar_contacts: list[Contact]         # the warning when a new contact looks like an existing one
+    has_match: bool                         # a new contact's phone is already on another contact
 
 
 class LegalProceedingService:
@@ -143,49 +150,82 @@ class LegalProceedingService:
         data: dict = {}
         if "party_role" in values:
             if values["party_role"] not in PartyRole.ALL:
-                raise legal_error(422, "invalid_party_role", "party_role must be owner, tenant or other")
+                raise legal_error(422, "invalid_party_role", "party_role must be tenant, landlord, supplier or other")
             data["party_role"] = values["party_role"]
         if "title" in values:
-            data["title"] = _text(values["title"], limit=255, field_name="title")
+            data["title"] = clean_text(values["title"], limit=255, field_name="title")
             if not data["title"]:
                 raise legal_error(422, "title_required", "A title is required")
-        if "unit_label" in values:
-            data["unit_label"] = _text(values["unit_label"], limit=100, field_name="unit_label")
+        if "apartment_number" in values:
+            data["apartment_number"] = clean_text(values["apartment_number"], limit=32, field_name="apartment_number")
+            if not data["apartment_number"]:
+                raise legal_error(422, "apartment_number_required", "An apartment number is required")
         if "claim_details" in values:
-            data["claim_details"] = _text(values["claim_details"])
+            data["claim_details"] = clean_text(values["claim_details"])
         if "claim_amount" in values:
             data["claim_amount"] = _amount(values["claim_amount"])
         return data
 
+    async def _resolve_parties(self, party_role: str, contact: dict, landlord: dict | None,
+                               confirm_duplicate: bool) -> tuple[Contact, Contact | None, bool]:
+        """The contact (and, for a tenant, the landlord) of a new proceeding: each an
+        existing card, used exactly as it is, or a new one. Selecting never changes a
+        card; missing details are completed through an explicit contact edit first.
+        Selected cards are locked in id order, so the required-details check holds."""
+        if party_role != PartyRole.TENANT and landlord:
+            raise legal_error(422, "landlord_not_allowed", "Only a tenant's proceeding has a linked landlord")
+        if party_role == PartyRole.TENANT and not landlord:
+            raise legal_error(422, "landlord_required", "A tenant's proceeding requires a landlord")
+        selections = [("contact", contact)] + ([("landlord", landlord)] if landlord else [])
+        contacts = ContactService(self.db, self.user)
+        await contacts.lock_phones_of([s["details"] for _, s in selections if not s.get("contact_id") and s.get("details")])
+        locked = await ContactRepository(self.db).lock_many([s["contact_id"] for _, s in selections if s.get("contact_id")])
+        resolved: dict[str, Contact] = {}
+        has_match = False
+        for party, selection in selections:
+            contact_id = selection.get("contact_id")
+            if contact_id:
+                card = locked.get(contact_id)
+                if card is None:
+                    raise legal_error(422, "contact_not_found", "The contact does not exist", contact_id=contact_id)
+                if not card.is_active:
+                    raise legal_error(422, "contact_inactive", "The contact is inactive")
+            else:
+                created = await contacts.create(selection.get("details") or {}, confirm_duplicate=confirm_duplicate)
+                card, has_match = created.contact, has_match or created.has_match
+            missing = [f for f in REQUIRED_PARTY_FIELDS if not getattr(card, f)]
+            if missing:
+                message = INCOMPLETE_CARD_MESSAGE if contact_id else "Required contact details are missing"
+                raise legal_error(422, "contact_details_incomplete", message, party=party, missing=missing)
+            resolved[party] = card
+        return resolved["contact"], resolved.get("landlord"), has_match
+
     # ── open ─────────────────────────────────────────────────────────────────
 
-    async def create(self, values: dict, *, contact_id: int | None = None,
-                     new_contact: dict | None = None) -> CreateResult:
-        """Open a proceeding for an existing contact or for a contact created in
-        the same transaction. Creates every stage (pending)."""
+    async def create(self, values: dict, *, contact: dict | None = None, landlord: dict | None = None,
+                     confirm_open_proceeding: bool = False, confirm_duplicate_contact: bool = False) -> CreateResult:
+        """Open a proceeding. ``contact`` / ``landlord`` are {"contact_id", "details"}:
+        an existing card (never changed here) or a new one. Everything
+        runs in one transaction; the caller commits. Creates every stage (pending)."""
         await self.access.require(Action.WRITE.value)
-        if (contact_id is None) == (new_contact is None):
-            raise legal_error(422, "contact_required", "Provide either contact_id or a new contact")
-        for required in ("party_role", "title"):
+        if not contact or not (contact.get("contact_id") or contact.get("details")):
+            raise legal_error(422, "contact_required", "Select an existing contact or provide a new one")
+        for required in ("party_role", "title", "apartment_number"):
             if required not in values:
                 raise legal_error(422, f"{required}_required", f"{required} is required")
         data = self._validated_fields(values)
         project_id = await self._validate_project(values.get("project_id"))
+        had_open = (data["party_role"] == PartyRole.TENANT and bool(contact.get("contact_id"))
+                    and await self.repo.has_open_tenant_proceeding(contact["contact_id"]))
+        if had_open and not confirm_open_proceeding:
+            raise legal_error(409, "tenant_has_open_proceeding", OPEN_PROCEEDING_WARNING)
+        primary, linked_landlord, has_match = await self._resolve_parties(
+            data["party_role"], contact, landlord, confirm_duplicate_contact)
 
-        similar: list[Contact] = []
-        if new_contact is not None:
-            created = await ContactService(self.db, self.user).create(new_contact)
-            contact, similar = created.contact, created.similar
-        else:
-            contact = await ContactRepository(self.db).get(contact_id)
-            if contact is None:
-                raise legal_error(422, "contact_not_found", "The contact does not exist", contact_id=contact_id)
-            if not contact.is_active:
-                raise legal_error(422, "contact_inactive", "The contact is inactive")
-
-        open_rows = await self.repo.open_for_contact(contact.id)
-        now = _now()
-        proceeding = LegalProceeding(contact_id=contact.id, project_id=project_id, status=ProceedingStatus.OPEN,
+        now = utc_now()
+        proceeding = LegalProceeding(contact_id=primary.id, project_id=project_id,
+                                     landlord_contact_id=linked_landlord.id if linked_landlord else None,
+                                     status=ProceedingStatus.OPEN,
                                      opened_at=now, created_by=self.user.id, created_at=now, **data)
         await self.repo.add(proceeding)
         for key in STAGE_KEYS:
@@ -193,16 +233,19 @@ class LegalProceedingService:
         await self.db.flush()
         await self._log(proceeding.id, LegalEvent.CREATED, {
             "after": snapshot(proceeding),
-            "open_proceedings_of_contact": [r.proceeding.id for r in open_rows],
+            "had_open_proceeding": had_open,
         })
-        return CreateResult(proceeding, contact, open_rows, similar)
+        return CreateResult(proceeding, primary, has_match)
 
     # ── edit ─────────────────────────────────────────────────────────────────
 
     async def update(self, proceeding_id: int, values: dict) -> LegalProceeding:
-        """Claim details, amount, role, unit, title, project. The contact never changes."""
-        if "contact_id" in values:
-            raise legal_error(422, "contact_immutable", "The contact of a proceeding cannot be changed")
+        """Claim details, amount, apartment number, title, project. The parties are
+        not editable here."""
+        changed = [f for f in IMMUTABLE_PARTY_FIELDS if f in values]
+        if changed:
+            raise legal_error(422, "contact_immutable", "The parties of a proceeding cannot be changed here",
+                              fields=changed)
         proceeding = await self.access.load(proceeding_id, Action.UPDATE.value, for_update=True, require_open=True)
         data = self._validated_fields(values)
         if "project_id" in values:
@@ -212,7 +255,7 @@ class LegalProceedingService:
             setattr(proceeding, key, value)
         old, new = changed_fields(before, snapshot(proceeding))
         if new:
-            proceeding.updated_at = _now()
+            proceeding.updated_at = utc_now()
             await self.db.flush()
             await self._log(proceeding.id, LegalEvent.UPDATED, {"before": old, "after": new})
         return proceeding
@@ -221,10 +264,10 @@ class LegalProceedingService:
         proceeding = await self.access.load(proceeding_id, Action.UPDATE.value, for_update=True)
         if proceeding.status == ProceedingStatus.CLOSED:
             raise legal_error(409, "already_closed", "The proceeding is already closed")
-        reason = _text(reason)
+        reason = clean_text(reason)
         if not reason:
             raise legal_error(422, "close_reason_required", "A reason is required to close a proceeding")
-        now = _now()
+        now = utc_now()
         proceeding.status, proceeding.closed_at = ProceedingStatus.CLOSED, now
         proceeding.closed_by, proceeding.close_reason, proceeding.updated_at = self.user.id, reason, now
         await self.db.flush()
@@ -239,15 +282,36 @@ class LegalProceedingService:
                     "close_reason": proceeding.close_reason}
         proceeding.status = ProceedingStatus.OPEN
         proceeding.closed_at = proceeding.closed_by = proceeding.close_reason = None
-        proceeding.updated_at = _now()
+        proceeding.updated_at = utc_now()
         await self.db.flush()
-        await self._log(proceeding.id, LegalEvent.REOPENED, {"previous_close": previous, "reason": _text(reason)})
+        await self._log(proceeding.id, LegalEvent.REOPENED, {"previous_close": previous, "reason": clean_text(reason)})
         return proceeding
 
     # ── read ─────────────────────────────────────────────────────────────────
 
     async def get(self, proceeding_id: int) -> LegalProceeding:
         return await self.access.load(proceeding_id)
+
+    async def detail(self, proceeding_id: int) -> ProceedingDetail:
+        """Everything the proceeding page shows at the top (6 queries)."""
+        p = await self.access.load(proceeding_id)
+        return await self.detail_of(p)
+
+    async def detail_of(self, p: LegalProceeding) -> ProceedingDetail:
+        """Detail of a proceeding already loaded through ``access.load``."""
+        stages = (await self.repo.stages_for([p.id]))[p.id]
+        assignees = (await self.repo.assignees_for([p.id]))[p.id]
+        contact = await ContactRepository(self.db).get(p.contact_id)
+        landlord = await ContactRepository(self.db).get(p.landlord_id) if p.landlord_id else None
+        project = await ProjectRepository(self.db).get_by_id(p.project_id) if p.project_id else None
+        users = await UserRepository(self.db).users_by_id([p.created_by, p.closed_by] + [s.resolved_by for s in stages])
+        can_update = await self.access.allowed(Action.UPDATE.value)
+        return ProceedingDetail(
+            p, contact, landlord, project.name if project else None, ordered_stages(stages), progress_of(stages),
+            [a.user_id for a in assignees], users, can_update,
+            can_update and (is_admin(self.user) or self.access.is_primary_owner(p)),
+            await self.access.allowed(Action.DELETE.value),
+        )
 
     async def list(self, filters: ProceedingFilters, *, page: int = 1, page_size: int = 50
                    ) -> tuple[list[ProceedingListItem], int]:
@@ -270,11 +334,15 @@ class LegalProceedingService:
         return await self.repo.project_summary(visible_to=self.access.visible_to,
                                                rollup_to_parent=rollup_to_parent, project_id=project_id)
 
-    async def open_proceedings_of_contact(self, contact_id: int, *, exclude_id: int | None = None
-                                          ) -> list[ProceedingRow]:
-        """The warning shown while opening a proceeding (before submitting)."""
+    async def linked_landlords(self) -> list[tuple[int, str]]:
+        """The landlords to offer in the list filter (visible proceedings only)."""
+        await self.access.require(Action.READ.value)
+        return await self.repo.linked_landlords(visible_to=self.access.visible_to)
+
+    async def has_open_proceeding(self, contact_id: int) -> bool:
+        """The general warning shown while opening a proceeding for a tenant."""
         await self.access.require(Action.WRITE.value)
-        return await self.repo.open_for_contact(contact_id, exclude_id=exclude_id)
+        return await self.repo.has_open_tenant_proceeding(contact_id)
 
     async def history(self, proceeding_id: int, *, page: int = 1, page_size: int = 50):
         """The proceeding's audit trail (stages, entries, documents, assignees...)."""

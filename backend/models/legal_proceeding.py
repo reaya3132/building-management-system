@@ -1,7 +1,9 @@
 """Legal proceedings (הליכים משפטיים).
 
-- ``LegalProceeding``          one independent proceeding of one contact, optionally
-                               tied to a project; personal claim details and amount.
+- ``LegalProceeding``          one independent proceeding: a primary contact
+                               (``contact_id``, typed by ``party_role``), the landlord
+                               linked to a tenant's proceeding, the apartment number,
+                               an optional project, claim details and amount.
 - ``LegalProceedingStage``     one row per fixed stage (configurations/legal/stages.py);
                                status changes only by an explicit complete / skip /
                                reopen action.
@@ -25,6 +27,8 @@ from decimal import Decimal
 
 from sqlalchemy import (
     CheckConstraint,
+    and_,
+    case,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -33,7 +37,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.configurations.legal.stages import STAGE1_KEY
@@ -51,10 +57,12 @@ class ProceedingStatus:
 
 
 class PartyRole:
-    OWNER = "owner"
+    """What the primary contact (``contact_id``) is in the proceeding."""
     TENANT = "tenant"
+    LANDLORD = "landlord"
+    SUPPLIER = "supplier"
     OTHER = "other"
-    ALL = (OWNER, TENANT, OTHER)
+    ALL = (TENANT, LANDLORD, SUPPLIER, OTHER)
 
 
 class StageStatus:
@@ -101,7 +109,13 @@ def _now() -> datetime:
 class LegalProceeding(Base):
     __tablename__ = "legal_proceedings"
     __table_args__ = (
-        CheckConstraint("party_role IN ('owner', 'tenant', 'other')", name="ck_lp_party_role"),
+        CheckConstraint("party_role IN ('tenant', 'landlord', 'supplier', 'other')", name="ck_lp_party_role"),
+        CheckConstraint(
+            "(party_role = 'tenant' AND landlord_contact_id IS NOT NULL)"
+            " OR (party_role <> 'tenant' AND landlord_contact_id IS NULL)",
+            name="ck_lp_landlord",
+        ),
+        CheckConstraint("trim(apartment_number) <> ''", name="ck_lp_apartment_number"),
         CheckConstraint("trim(title) <> ''", name="ck_lp_title"),
         CheckConstraint("claim_amount IS NULL OR claim_amount > 0", name="ck_lp_amount"),
         CheckConstraint("status IN ('open', 'closed')", name="ck_lp_status"),
@@ -113,6 +127,9 @@ class LegalProceeding(Base):
         ),
         Index("ix_lp_project_status", "project_id", "status"),
         Index("ix_lp_contact_status", "contact_id", "status"),
+        # Serves linked_to_landlord(): only a tenant's proceeding has a linked landlord.
+        Index("ix_lp_landlord_status", "landlord_contact_id", "status",
+              postgresql_where=text("party_role = 'tenant'"), sqlite_where=text("party_role = 'tenant'")),
         Index("ix_lp_created_by_status", "created_by", "status"),
     )
 
@@ -120,7 +137,9 @@ class LegalProceeding(Base):
     contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=False)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="RESTRICT"), nullable=True)
     party_role: Mapped[str] = mapped_column(String(20), nullable=False)
-    unit_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # The landlord of this tenant; only when party_role = 'tenant' (ck_lp_landlord).
+    landlord_contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True)
+    apartment_number: Mapped[str] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     claim_details: Mapped[str | None] = mapped_column(Text, nullable=True)
     claim_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
@@ -134,7 +153,7 @@ class LegalProceeding(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    contact: Mapped["Contact"] = relationship("Contact", lazy="noload")
+    contact: Mapped["Contact"] = relationship("Contact", foreign_keys=[contact_id], lazy="noload")
     project: Mapped["Project | None"] = relationship("Project", lazy="noload")
     created_by_user: Mapped["User"] = relationship("User", foreign_keys=[created_by], lazy="noload")
     stages: Mapped[list["LegalProceedingStage"]] = relationship(
@@ -143,6 +162,23 @@ class LegalProceeding(Base):
     assignees: Mapped[list["LegalProceedingAssignee"]] = relationship(
         "LegalProceedingAssignee", back_populates="proceeding", lazy="noload", passive_deletes="all"
     )
+
+    @hybrid_property
+    def landlord_id(self) -> int | None:
+        """The landlord linked to a tenant's proceeding; None for every other type
+        (when party_role = 'landlord' the landlord is the primary contact)."""
+        return self.landlord_contact_id if self.party_role == PartyRole.TENANT else None
+
+    @landlord_id.inplace.expression
+    @classmethod
+    def _landlord_id_expression(cls):
+        return case((cls.party_role == PartyRole.TENANT, cls.landlord_contact_id), else_=None)
+
+    @classmethod
+    def linked_to_landlord(cls, contact_id: int):
+        """The one condition for filtering by linked landlord. Use this in WHERE, not
+        ``landlord_id == x``: the partial index needs the explicit party_role term."""
+        return and_(cls.party_role == PartyRole.TENANT, cls.landlord_contact_id == contact_id)
 
 
 class LegalProceedingStage(Base):

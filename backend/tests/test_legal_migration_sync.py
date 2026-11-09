@@ -23,6 +23,7 @@ from backend.models.legal_proceeding import (
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
 SQL = (MIGRATIONS / "add_legal_proceedings.sql").read_text(encoding="utf-8")
+CONTACTS_SQL = (MIGRATIONS / "add_contacts.sql").read_text(encoding="utf-8")
 MODELS = (Contact, LegalProceeding, LegalProceedingStage, LegalProceedingEntry, LegalProceedingAssignee)
 
 
@@ -113,3 +114,21 @@ def test_indexes_match():
         for ix in model.__table__.indexes
     }
     assert model_indexes == sql_indexes
+
+
+def test_contacts_definition_is_the_same_in_both_migrations():
+    def table(text):
+        m = re.search(r"CREATE TABLE IF NOT EXISTS contacts \(", text)
+        return _norm(_balanced(text, m.end() - 1))
+
+    def indexes(text):
+        return sorted(_norm(i) for i in re.findall(r"CREATE INDEX IF NOT EXISTS ix_contacts_\w+ ON contacts \([^)]*\)", text))
+
+    assert table(CONTACTS_SQL) == table(SQL)
+    assert indexes(CONTACTS_SQL) == indexes(SQL)
+
+
+def test_partial_landlord_index_matches():
+    index = next(ix for ix in LegalProceeding.__table__.indexes if ix.name == "ix_lp_landlord_status")
+    where = _norm(str(index.dialect_options["postgresql"]["where"]))
+    assert f"ix_lp_landlord_status on legal_proceedings (landlord_contact_id, status) where {where};" in _norm(SQL)

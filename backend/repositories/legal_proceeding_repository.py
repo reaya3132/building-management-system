@@ -29,6 +29,7 @@ from backend.models.legal_proceeding import (
     LegalProceedingAssignee,
     LegalProceedingEntry,
     LegalProceedingStage,
+    PartyRole,
     ProceedingStatus,
 )
 from backend.models.project import Project
@@ -52,6 +53,7 @@ class ProceedingFilters:
     project_id: int | None = None
     include_subprojects: bool = False     # with project_id: also its sub-projects
     contact_id: int | None = None
+    landlord_contact_id: int | None = None   # the landlord linked to a tenant's proceeding
     search: str | None = None             # title / contact name / unit
     assigned_user_id: int | None = None   # creator or assignee (Admin filter)
 
@@ -62,6 +64,7 @@ class ProceedingRow:
     contact_name: str
     project_name: str | None
     created_by_name: str | None
+    linked_landlord_name: str | None = None   # only in a tenant's proceeding
 
 
 @dataclass
@@ -122,6 +125,8 @@ class LegalProceedingRepository:
             stmt = stmt.where(LegalProceeding.status == filters.status)
         if filters.contact_id is not None:
             stmt = stmt.where(LegalProceeding.contact_id == filters.contact_id)
+        if filters.landlord_contact_id is not None:
+            stmt = stmt.where(LegalProceeding.linked_to_landlord(filters.landlord_contact_id))
         if filters.project_id is not None:
             if filters.include_subprojects:
                 stmt = stmt.where(or_(LegalProceeding.project_id == filters.project_id,
@@ -133,7 +138,7 @@ class LegalProceedingRepository:
             stmt = stmt.where(or_(
                 LegalProceeding.title.ilike(pattern, escape=LIKE_ESCAPE),
                 Contact.name.ilike(pattern, escape=LIKE_ESCAPE),
-                LegalProceeding.unit_label.ilike(pattern, escape=LIKE_ESCAPE),
+                LegalProceeding.apartment_number.ilike(pattern, escape=LIKE_ESCAPE),
             ))
         return stmt
 
@@ -144,29 +149,46 @@ class LegalProceedingRepository:
             select(func.count()).select_from(base.with_only_columns(LegalProceeding.id).subquery())
         )).scalar_one()
         creator = aliased(User, name="creator")
+        landlord = aliased(Contact, name="linked_landlord")
         stmt = (
-            base.add_columns(Contact.name, Project.name, creator.full_name)
+            base.add_columns(Contact.name, Project.name, creator.full_name, landlord.name)
             .outerjoin(creator, creator.id == LegalProceeding.created_by)
+            .outerjoin(landlord, and_(LegalProceeding.party_role == PartyRole.TENANT,
+                                      landlord.id == LegalProceeding.landlord_contact_id))
             .order_by(LegalProceeding.status.desc(),  # 'open' before 'closed'
                       LegalProceeding.opened_at.desc(), LegalProceeding.id.desc())
             .offset(offset).limit(limit)
         )
-        rows = [ProceedingRow(p, cname, pname, uname) for p, cname, pname, uname in (await self.db.execute(stmt))]
+        rows = [ProceedingRow(p, cname, pname, uname, lname)
+                for p, cname, pname, uname, lname in (await self.db.execute(stmt))]
         return rows, total
 
-    async def open_for_contact(self, contact_id: int, *, exclude_id: int | None = None) -> list[ProceedingRow]:
-        """Every open proceeding of a contact (not only visible ones: the warning
-        exists precisely to reveal parallel proceedings)."""
+    async def linked_landlords(self, *, visible_to: int | None) -> list[tuple[int, str]]:
+        """(id, name) of every landlord linked to a visible tenant's proceeding, once each."""
         stmt = (
-            select(LegalProceeding, Contact.name, Project.name)
-            .join(Contact, Contact.id == LegalProceeding.contact_id)
-            .outerjoin(Project, Project.id == LegalProceeding.project_id)
-            .where(LegalProceeding.contact_id == contact_id, LegalProceeding.status == ProceedingStatus.OPEN)
-            .order_by(LegalProceeding.opened_at.desc())
+            select(Contact.id, Contact.name)
+            .join(LegalProceeding, LegalProceeding.landlord_contact_id == Contact.id)
+            .where(LegalProceeding.party_role == PartyRole.TENANT)
+            .distinct()
+            .order_by(Contact.name, Contact.id)
         )
-        if exclude_id is not None:
-            stmt = stmt.where(LegalProceeding.id != exclude_id)
-        return [ProceedingRow(p, c, pn, None) for p, c, pn in (await self.db.execute(stmt))]
+        if visible_to is not None:
+            stmt = stmt.where(visible_to_user_clause(visible_to))
+        return [(row.id, row.name) for row in await self.db.execute(stmt)]
+
+    async def has_open_tenant_proceeding(self, contact_id: int) -> bool:
+        """Is this contact the tenant of an open proceeding, whoever can see it?"""
+        stmt = select(exists().where(LegalProceeding.contact_id == contact_id,
+                                     LegalProceeding.party_role == PartyRole.TENANT,
+                                     LegalProceeding.status == ProceedingStatus.OPEN))
+        return bool((await self.db.execute(stmt)).scalar())
+
+    async def has_open_proceeding_for_contact(self, contact_id: int) -> bool:
+        """Is this contact a party (primary or linked landlord) of an open proceeding?"""
+        stmt = select(exists().where(or_(LegalProceeding.contact_id == contact_id,
+                                         LegalProceeding.landlord_contact_id == contact_id),
+                                     LegalProceeding.status == ProceedingStatus.OPEN))
+        return bool((await self.db.execute(stmt)).scalar())
 
     async def has_visible_for_contact(self, contact_id: int, user_id: int) -> bool:
         stmt = select(exists().where(LegalProceeding.contact_id == contact_id, visible_to_user_clause(user_id)))
@@ -373,11 +395,3 @@ class LegalProceedingRepository:
         )).all()
         total = (await self.db.execute(select(func.count(AuditLog.id)).where(where))).scalar_one()
         return [(log, name) for log, name in rows], total
-
-    # ── users ────────────────────────────────────────────────────────────────
-
-    async def users_by_id(self, user_ids) -> dict[int, User]:
-        ids = {i for i in user_ids if i is not None}
-        if not ids:
-            return {}
-        return {u.id: u for u in (await self.db.execute(select(User).where(User.id.in_(ids)))).scalars()}

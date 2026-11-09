@@ -1,8 +1,7 @@
 -- Legal proceedings module (הליכים משפטיים): tables, constraints and documents.context_key.
 --
 -- What this does (additive only — no existing row is changed or deleted):
---   contacts                     general contact card (person / business)
---   legal_proceedings            one independent proceeding per contact
+--   legal_proceedings            one independent proceeding: primary contact, linked landlord, apartment
 --   legal_proceeding_stages      status of each fixed stage of a proceeding
 --   legal_proceeding_entries     notes + stage-1 communication records
 --   legal_proceeding_assignees   operational assignment of employees
@@ -18,6 +17,15 @@
 -- and only then deploy the code. The new code reads documents.context_key in every
 -- documents query; without the column every existing documents feature fails.
 --
+-- public.contacts is a general table with its own migration (add_contacts.sql), which
+-- must run first; this file never creates, alters or marks it, but its final comparison
+-- still verifies it. The state detection looks only at the four module tables.
+--
+-- The file detects the state of public and acts accordingly (step 2): all four tables
+-- missing -> created; the previous structure -> upgraded with ALTER (data kept, no table
+-- dropped; stops if data could not be carried over); the current structure -> only
+-- verified; a partial or unrecognised state -> stops without changing anything.
+--
 -- Re-run safety does not rely on IF NOT EXISTS alone. The DDL is defined once
 -- (pg_temp.legal_ddl) and executed twice:
 --   1. into a throw-away reference schema (legal_migration_ref), always from scratch;
@@ -29,12 +37,12 @@
 -- documents.context_key, when already present, must be VARCHAR(50) NULL.
 --
 -- Ownership markers (used by rollback_legal_proceedings.sql, which drops only what
--- carries one): COMMENT 'owner:add_legal_proceedings' on each of the five tables and
+-- carries one): COMMENT 'owner:add_legal_proceedings' on each of the four module tables and
 -- on documents.context_key — the column only when THIS file added it.
 --
 -- Adoption of tables that already exist: if the application's create_all provisioned
--- the five module tables before this file ran (code deployed first), they are ADOPTED
--- — marked as owned — only AFTER the full comparison of step 4 proved them identical
+-- the module tables before this file ran (code deployed first), they are ADOPTED
+-- — marked as owned — only AFTER the full comparison of step 5 proved them identical
 -- to the expected definition. Anything that differs stops the file and nothing is
 -- marked. An adopted table may later be dropped by the rollback, which does so only
 -- after verifying it holds no rows and that nothing outside the module depends on it.
@@ -48,16 +56,18 @@ BEGIN;
 -- Fail fast instead of queueing behind a long transaction on documents.
 SET LOCAL lock_timeout = '5s';
 
-CREATE FUNCTION pg_temp.legal_ddl() RETURNS void LANGUAGE plpgsql AS $ddl$
+CREATE FUNCTION pg_temp.legal_ddl(with_contacts boolean) RETURNS void LANGUAGE plpgsql AS $ddl$
 BEGIN
     -- Unqualified names: the caller's search_path picks the target schema.
 
+    -- Expected definition, for the reference copy only: contacts is never created here.
+    IF with_contacts THEN
     CREATE TABLE IF NOT EXISTS contacts (
         id          SERIAL        NOT NULL,
         kind        VARCHAR(20)   NOT NULL,
         name        VARCHAR(255)  NOT NULL,
         email       VARCHAR(255)  NULL,
-        phone       VARCHAR(50)   NULL,
+        phone       VARCHAR(50)   NOT NULL,
         phone_2     VARCHAR(50)   NULL,
         address     VARCHAR(500)  NULL,
         notes       TEXT          NULL,
@@ -68,18 +78,22 @@ BEGIN
         PRIMARY KEY (id),
         FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL,
         CONSTRAINT ck_contacts_kind CHECK (kind IN ('person', 'business')),
-        CONSTRAINT ck_contacts_name CHECK (trim(name) <> '')
+        CONSTRAINT ck_contacts_name CHECK (trim(name) <> ''),
+        CONSTRAINT ck_contacts_phone CHECK (trim(phone) <> '')
     );
     CREATE INDEX IF NOT EXISTS ix_contacts_name ON contacts (name);
     CREATE INDEX IF NOT EXISTS ix_contacts_phone ON contacts (phone);
+    CREATE INDEX IF NOT EXISTS ix_contacts_phone_2 ON contacts (phone_2);
     CREATE INDEX IF NOT EXISTS ix_contacts_email ON contacts (email);
+    END IF;
 
     CREATE TABLE IF NOT EXISTS legal_proceedings (
         id             SERIAL         NOT NULL,
         contact_id     INTEGER        NOT NULL,
         project_id     INTEGER        NULL,
         party_role     VARCHAR(20)    NOT NULL,
-        unit_label     VARCHAR(100)   NULL,
+        landlord_contact_id INTEGER   NULL,
+        apartment_number VARCHAR(32)  NOT NULL,
         title          VARCHAR(255)   NOT NULL,
         claim_details  TEXT           NULL,
         claim_amount   NUMERIC(14, 2) NULL,
@@ -93,10 +107,15 @@ BEGIN
         updated_at     TIMESTAMP      NULL,
         PRIMARY KEY (id),
         FOREIGN KEY (contact_id) REFERENCES contacts (id) ON DELETE RESTRICT,
+        FOREIGN KEY (landlord_contact_id) REFERENCES contacts (id) ON DELETE RESTRICT,
         FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE RESTRICT,
         FOREIGN KEY (closed_by) REFERENCES users (id) ON DELETE RESTRICT,
         FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE RESTRICT,
-        CONSTRAINT ck_lp_party_role CHECK (party_role IN ('owner', 'tenant', 'other')),
+        CONSTRAINT ck_lp_party_role CHECK (party_role IN ('tenant', 'landlord', 'supplier', 'other')),
+        CONSTRAINT ck_lp_landlord CHECK (
+            (party_role = 'tenant' AND landlord_contact_id IS NOT NULL)
+            OR (party_role <> 'tenant' AND landlord_contact_id IS NULL)),
+        CONSTRAINT ck_lp_apartment_number CHECK (trim(apartment_number) <> ''),
         CONSTRAINT ck_lp_title CHECK (trim(title) <> ''),
         CONSTRAINT ck_lp_amount CHECK (claim_amount IS NULL OR claim_amount > 0),
         CONSTRAINT ck_lp_status CHECK (status IN ('open', 'closed')),
@@ -107,6 +126,8 @@ BEGIN
     );
     CREATE INDEX IF NOT EXISTS ix_lp_project_status ON legal_proceedings (project_id, status);
     CREATE INDEX IF NOT EXISTS ix_lp_contact_status ON legal_proceedings (contact_id, status);
+    CREATE INDEX IF NOT EXISTS ix_lp_landlord_status ON legal_proceedings (landlord_contact_id, status)
+        WHERE party_role = 'tenant';
     CREATE INDEX IF NOT EXISTS ix_lp_created_by_status ON legal_proceedings (created_by, status);
 
     CREATE TABLE IF NOT EXISTS legal_proceeding_stages (
@@ -175,16 +196,123 @@ BEGIN
 END
 $ddl$;
 
+-- 0. Tables the module references must exist ------------------------------------
+DO $$
+DECLARE
+    dep text;
+BEGIN
+    FOREACH dep IN ARRAY ARRAY['users', 'projects', 'documents'] LOOP
+        IF to_regclass('public.' || dep) IS NULL THEN
+            RAISE EXCEPTION 'Required table public.% is missing: cannot apply the legal proceedings migration', dep;
+        END IF;
+    END LOOP;
+    IF to_regclass('public.contacts') IS NULL THEN
+        RAISE EXCEPTION 'Required table public.contacts is missing: run add_contacts.sql first';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.contacts'::regclass
+                    AND conname = 'ck_contacts_phone') THEN
+        RAISE EXCEPTION 'public.contacts has the previous structure: run add_contacts.sql first';
+    END IF;
+END $$;
+
 -- 1. Reference copy, always built from scratch ----------------------------------
 CREATE SCHEMA legal_migration_ref;  -- fails (safe stop) if a stale copy exists
 SET LOCAL search_path = legal_migration_ref, public;
-SELECT pg_temp.legal_ddl();
+SELECT pg_temp.legal_ddl(true);
 
--- 2. Target: create only what is missing ----------------------------------------
+-- 2. Detect the state of the module tables; upgrade the previous structure ---------
+-- Based only on the four module tables. Only these outcomes continue: all four
+-- missing (created in step 3), the exact previous structure (upgraded here, data
+-- kept), or the current structure (step 3 creates nothing). Everything else stops.
+-- Step 5 still verifies the result, contacts included.
+DO $$
+DECLARE
+    tables CONSTANT text[] := ARRAY['legal_proceedings', 'legal_proceeding_stages',
+                                    'legal_proceeding_entries', 'legal_proceeding_assignees'];
+    present text[];
+    has_unit_label boolean;   has_apartment boolean;   has_landlord boolean;
+    role_is_old boolean;      role_is_new boolean;
+    has_ck_landlord boolean;  has_ck_apartment boolean; has_ix_landlord boolean;
+    is_old boolean;           is_new boolean;
+    n_tenant bigint;          n_blank_unit bigint;      n_long_unit bigint;
+BEGIN
+    SELECT coalesce(array_agg(t ORDER BY t), '{}') INTO present
+      FROM unnest(tables) t WHERE to_regclass('public.' || t) IS NOT NULL;
+
+    IF cardinality(present) = 0 THEN
+        RAISE NOTICE 'Legal schema state: absent; creating the module tables';
+        RETURN;
+    END IF;
+    IF cardinality(present) < cardinality(tables) THEN
+        RAISE EXCEPTION 'Legal schema is in a partial state: present [%], expected all of [%]. Nothing was changed.',
+            array_to_string(present, ', '), array_to_string(tables, ', ');
+    END IF;
+
+    has_unit_label := EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+                               AND table_name = 'legal_proceedings' AND column_name = 'unit_label');
+    has_apartment  := EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+                               AND table_name = 'legal_proceedings' AND column_name = 'apartment_number');
+    has_landlord   := EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+                               AND table_name = 'legal_proceedings' AND column_name = 'landlord_contact_id');
+    role_is_old := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.legal_proceedings'::regclass
+                            AND conname = 'ck_lp_party_role' AND pg_get_constraintdef(oid) LIKE '%''owner''%');
+    role_is_new := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.legal_proceedings'::regclass
+                            AND conname = 'ck_lp_party_role' AND pg_get_constraintdef(oid) LIKE '%''landlord''%');
+    has_ck_landlord  := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.legal_proceedings'::regclass
+                                 AND conname = 'ck_lp_landlord');
+    has_ck_apartment := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.legal_proceedings'::regclass
+                                 AND conname = 'ck_lp_apartment_number');
+    has_ix_landlord  := to_regclass('public.ix_lp_landlord_status') IS NOT NULL;
+
+    is_new := NOT has_unit_label AND has_apartment AND has_landlord AND role_is_new AND NOT role_is_old
+              AND has_ck_landlord AND has_ck_apartment AND has_ix_landlord;
+    is_old := has_unit_label AND NOT has_apartment AND NOT has_landlord AND role_is_old AND NOT role_is_new
+              AND NOT has_ck_landlord AND NOT has_ck_apartment AND NOT has_ix_landlord;
+
+    IF is_new THEN
+        RAISE NOTICE 'Legal schema state: current; verifying only';
+        RETURN;
+    END IF;
+    IF NOT is_old THEN
+        RAISE EXCEPTION 'Legal schema is in an unrecognised state (neither the previous nor the current structure): unit_label=%, apartment_number=%, landlord_contact_id=%, role_old=%, role_new=%, ck_lp_landlord=%, ck_lp_apartment_number=%, ix_lp_landlord_status=%. Nothing was changed.',
+            has_unit_label, has_apartment, has_landlord, role_is_old, role_is_new,
+            has_ck_landlord, has_ck_apartment, has_ix_landlord;
+    END IF;
+
+    -- Previous structure: check the data under lock, before changing any column.
+    LOCK TABLE public.legal_proceedings IN ACCESS EXCLUSIVE MODE;
+    SELECT count(*) FILTER (WHERE party_role = 'tenant'),
+           count(*) FILTER (WHERE unit_label IS NULL OR trim(unit_label) = ''),
+           count(*) FILTER (WHERE length(unit_label) > 32)
+      INTO n_tenant, n_blank_unit, n_long_unit FROM public.legal_proceedings;
+    IF n_tenant + n_blank_unit + n_long_unit > 0 THEN
+        RAISE EXCEPTION 'Cannot upgrade the legal schema without losing or inventing data: tenant proceedings without a landlord=%, proceedings without an apartment number=%, apartment numbers longer than 32=%. Complete the data first; nothing was changed.',
+            n_tenant, n_blank_unit, n_long_unit;
+    END IF;
+
+    RAISE NOTICE 'Legal schema state: previous; upgrading';
+    ALTER TABLE public.legal_proceedings DROP CONSTRAINT ck_lp_party_role;
+    UPDATE public.legal_proceedings SET party_role = 'landlord' WHERE party_role = 'owner';
+    ALTER TABLE public.legal_proceedings RENAME COLUMN unit_label TO apartment_number;
+    ALTER TABLE public.legal_proceedings
+        ALTER COLUMN apartment_number TYPE VARCHAR(32),
+        ALTER COLUMN apartment_number SET NOT NULL,
+        ADD COLUMN landlord_contact_id INTEGER NULL,
+        ADD FOREIGN KEY (landlord_contact_id) REFERENCES public.contacts (id) ON DELETE RESTRICT,
+        ADD CONSTRAINT ck_lp_party_role CHECK (party_role IN ('tenant', 'landlord', 'supplier', 'other')),
+        ADD CONSTRAINT ck_lp_landlord CHECK (
+            (party_role = 'tenant' AND landlord_contact_id IS NOT NULL)
+            OR (party_role <> 'tenant' AND landlord_contact_id IS NULL)),
+        ADD CONSTRAINT ck_lp_apartment_number CHECK (trim(apartment_number) <> '');
+    CREATE INDEX ix_lp_landlord_status ON public.legal_proceedings (landlord_contact_id, status)
+        WHERE party_role = 'tenant';
+END $$;
+
+-- 3. Target: create only what is missing ----------------------------------------
 SET LOCAL search_path = public;
-SELECT pg_temp.legal_ddl();
+SELECT pg_temp.legal_ddl(false);
 
--- 3. documents.context_key -------------------------------------------------------
+-- 4. documents.context_key -------------------------------------------------------
 DO $$
 DECLARE
     col record;
@@ -204,7 +332,7 @@ BEGIN
     END IF;
 END $$;
 
--- 4. Compare public with the reference -------------------------------------------
+-- 5. Compare public with the reference -------------------------------------------
 DO $$
 DECLARE
     tables CONSTANT text[] := ARRAY['contacts', 'legal_proceedings', 'legal_proceeding_stages',
@@ -250,8 +378,7 @@ BEGIN
     END IF;
 END $$;
 
--- 5. Ownership markers, cleanup ---------------------------------------------------
-COMMENT ON TABLE public.contacts IS 'owner:add_legal_proceedings';
+-- 6. Ownership markers, cleanup ---------------------------------------------------
 COMMENT ON TABLE public.legal_proceedings IS 'owner:add_legal_proceedings';
 COMMENT ON TABLE public.legal_proceeding_stages IS 'owner:add_legal_proceedings';
 COMMENT ON TABLE public.legal_proceeding_entries IS 'owner:add_legal_proceedings';

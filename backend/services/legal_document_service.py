@@ -47,6 +47,7 @@ from backend.models.legal_proceeding import (
 )
 from backend.models.user import User
 from backend.repositories.legal_proceeding_repository import DocumentUpload, LegalProceedingRepository
+from backend.repositories.user_repository import UserRepository
 from backend.services.audit_service import AuditService
 from backend.services.document_storage import DocumentStorageService, StoredFile
 from backend.services.legal_access import LegalAccess, legal_error
@@ -243,7 +244,7 @@ class LegalDocumentService:
 
     async def views(self, proceeding_id: int, docs: list[Document]) -> list[DocumentView]:
         uploads = await self.repo.document_uploads(proceeding_id)
-        users = await self.repo.users_by_id(u.user_id for u in uploads.values())
+        users = await UserRepository(self.db).users_by_id(u.user_id for u in uploads.values())
         result = []
         for doc in docs:
             upload = uploads.get(doc.id) or DocumentUpload(None, doc.uploaded_at)

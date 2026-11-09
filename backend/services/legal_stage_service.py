@@ -13,7 +13,6 @@ The proceeding row is locked first, so concurrent stage actions are serialised.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,14 +27,10 @@ from backend.models.legal_proceeding import (
 )
 from backend.repositories.legal_proceeding_repository import LegalProceedingRepository, StageDocumentationCounts
 from backend.services.audit_service import AuditService
-from backend.services.legal_access import LegalAccess, legal_error
+from backend.services.legal_access import legal_error, LegalAccess, utc_now
 
 COMMUNICATION_REQUIREMENT = "communication_with_file"
 COMMUNICATION_REQUIREMENT_LABEL = "תיעוד תקשורת אחד לפחות עם קובץ מצורף"
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _clean(reason: str | None) -> str | None:
@@ -75,7 +70,7 @@ class LegalStageService:
                                     {"stage_key": stage.stage_key, "from": before, "to": stage.status, **details})
 
     def _resolve(self, stage: LegalProceedingStage, status: str) -> None:
-        now = _now()
+        now = utc_now()
         stage.status, stage.resolved_at, stage.resolved_by, stage.updated_at = status, now, self.user.id, now
 
     async def missing(self, proceeding_id: int, stage_key: str) -> list[dict]:
@@ -118,7 +113,7 @@ class LegalStageService:
                               status=stage.status)
         before = stage.status
         previous = {"resolved_at": stage.resolved_at.isoformat(), "resolved_by": stage.resolved_by}
-        stage.status, stage.resolved_at, stage.resolved_by, stage.updated_at = StageStatus.PENDING, None, None, _now()
+        stage.status, stage.resolved_at, stage.resolved_by, stage.updated_at = StageStatus.PENDING, None, None, utc_now()
         await self.db.flush()
         await self._log_change(stage, before, reason=_clean(reason), previous=previous)
         return stage
