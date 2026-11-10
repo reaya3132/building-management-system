@@ -53,6 +53,7 @@ from backend.schemas.legal import (
     ProceedingPermissions,
     ProceedingUpdate,
     Progress,
+    ProjectOptionOut,
     ProjectSummaryOut,
     ReasonBody,
     Ref,
@@ -197,6 +198,13 @@ async def open_proceedings_of_contact(contact_id: int, db: DBSessionDep, user=cu
 
 
 # ── proceedings ──────────────────────────────────────────────────────────────
+
+@router.get("/project-options", response_model=list[ProjectOptionOut])
+async def project_options(db: DBSessionDep, user=current_user):
+    """Active projects for the picker shown while opening a proceeding."""
+    return [ProjectOptionOut(id=i, name=name, parent_name=parent)
+            for i, name, parent in await LegalProceedingService(db, user).project_options()]
+
 
 @router.get("/landlords", response_model=list[Ref])
 async def linked_landlords(db: DBSessionDep, user=current_user):

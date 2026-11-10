@@ -334,6 +334,14 @@ class LegalProceedingService:
         return await self.repo.project_summary(visible_to=self.access.visible_to,
                                                rollup_to_parent=rollup_to_parent, project_id=project_id)
 
+    async def project_options(self) -> list[tuple[int, str, str | None]]:
+        """Active projects to choose from while opening a proceeding, with their parent's
+        name. The list also holds inactive parents, so one query is enough for the names."""
+        await self.access.require(Action.WRITE.value)
+        projects = await ProjectRepository(self.db).project_options()
+        names = {p.id: p.name for p in projects}
+        return [(p.id, p.name, names.get(p.relation_project)) for p in projects if p.is_active]
+
     async def linked_landlords(self) -> list[tuple[int, str]]:
         """The landlords to offer in the list filter (visible proceedings only)."""
         await self.access.require(Action.READ.value)

@@ -35,6 +35,7 @@ const UnforeseenTransactions = React.lazy(() => import('./pages/UnforeseenTransa
 const TaskManagement = React.lazy(() => import('./pages/TaskManagement'))
 const BuildingReceptionDesk = React.lazy(() => import('./pages/BuildingReceptionDesk'))
 const CollectionTasks = React.lazy(() => import('./pages/CollectionTasks'))
+const LegalProceedings = React.lazy(() => import('./pages/LegalProceedings'))
 const TaskCalendar = React.lazy(() => import('./pages/TaskCalendar'))
 const UserPermissions = React.lazy(() => import('./pages/UserPermissions'))
 const Notifications = React.lazy(() => import('./pages/Notifications'))
@@ -293,6 +294,7 @@ function AppContent() {
               <Route path="/task-management" element={<RequireAuth><RequirePermission resource="task"><TaskManagement /></RequirePermission></RequireAuth>} />
               <Route path="/building-reception" element={<RequireAuth><RequirePermission resource="building_reception"><BuildingReceptionDesk /></RequirePermission></RequireAuth>} />
               <Route path="/collection-tasks" element={<RequireAuth><RequirePermission resource="collection_task"><CollectionTasks /></RequirePermission></RequireAuth>} />
+              <Route path="/legal-proceedings" element={<RequireAuth><RequirePermission resource="legal_proceeding"><LegalProceedings /></RequirePermission></RequireAuth>} />
               <Route path="/task-calendar" element={<Navigate to="/task-management" replace />} />
               <Route path="/inventory" element={<RequireAuth><InventoryLayout /></RequireAuth>}>
                 <Route index element={<InventoryDashboard />} />

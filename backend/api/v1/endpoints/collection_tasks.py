@@ -40,6 +40,7 @@ from backend.models.collection_task import (
 from backend.models.project import Project
 from backend.models.task import Task, TaskAttachment, TaskKind
 from backend.repositories.collection_task_repository import CollectionFilters, CollectionTaskRepository
+from backend.repositories.project_repository import ProjectRepository
 from backend.repositories.notification_repository import NotificationRepository
 from backend.repositories.user_repository import UserRepository
 from backend.schemas.collection_task import (
@@ -293,7 +294,7 @@ async def collection_project_options(db: DBSessionDep, user=Depends(require_perm
     return [
         ProjectOption(id=p.id, name=p.name, relation_project=p.relation_project,
                       is_parent_project=bool(p.is_parent_project), is_active=bool(p.is_active))
-        for p in await CollectionTaskRepository(db).project_options()
+        for p in await ProjectRepository(db).project_options()
     ]
 
 

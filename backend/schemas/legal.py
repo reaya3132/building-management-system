@@ -133,6 +133,12 @@ class Ref(_Out):
     name: str | None = None
 
 
+class ProjectOptionOut(_Out):
+    id: int
+    name: str
+    parent_name: str | None = None
+
+
 class ProceedingListItem(_Out):
     id: int
     title: str

@@ -1003,6 +1003,75 @@ async def test_landlord_picker_query_count_does_not_grow(test_client, test_engin
     assert rows == 1 and (await count()) == (first, 4)
 
 
+# ── project options ──────────────────────────────────────────────────────────
+
+async def test_project_options_lists_active_projects_with_parent_name(test_client, test_db, lawyer):
+    parent = Project(name="אב לא פעיל", is_active=False, is_parent_project=True)
+    test_db.add(parent)
+    await test_db.flush()
+    child = Project(name="כניסה 1", is_active=True, relation_project=parent.id)
+    standalone = Project(name="עצמאי", is_active=True)
+    archived = Project(name="בארכיון", is_active=False)
+    test_db.add_all([child, standalone, archived])
+    await test_db.commit()
+    r = await test_client.get(f"{API}/project-options", headers=auth(lawyer))
+    assert r.status_code == 200, r.text
+    assert r.json() == [{"id": child.id, "name": "כניסה 1", "parent_name": "אב לא פעיל"},
+                        {"id": standalone.id, "name": "עצמאי", "parent_name": None}]
+
+
+async def test_inactive_project_is_only_hidden_from_the_picker(test_client, test_db, lawyer):
+    project = Project(name="ייסגר", is_active=True)
+    test_db.add(project)
+    await test_db.commit()
+    created = (await open_proceeding(test_client, lawyer, party_role="other", project_id=project.id))["proceeding"]
+    h = auth(lawyer)
+    project.is_active = False
+    await test_db.commit()
+    assert (await test_client.get(f"{API}/project-options", headers=h)).json() == []
+    listed = (await test_client.get(f"{API}/proceedings", params={"project_id": project.id}, headers=h)).json()
+    assert listed["total"] == 1 and listed["items"][0]["project"]["name"] == "ייסגר"
+    detail = (await test_client.get(f"{API}/proceedings/{created['id']}", headers=h)).json()
+    assert detail["project"] == {"id": project.id, "name": "ייסגר"}
+
+
+async def test_legal_project_options_do_not_need_collection_permission(test_client, test_db):
+    only_legal = await make_user(test_db, "only-legal@test.com", "read", "write")
+    assert (await test_client.get(f"{API}/project-options", headers=auth(only_legal))).status_code == 200
+    assert (await test_client.get("/api/v1/collection-tasks/project-options", headers=auth(only_legal))).status_code == 403
+
+
+async def test_project_options_needs_legal_write(test_client, test_db, lawyer):
+    url = f"{API}/project-options"
+    assert (await test_client.get(url)).status_code == 401
+    reader = await make_user(test_db, "reader3@test.com", "read")
+    assert (await test_client.get(url, headers=auth(reader))).status_code == 403
+    assert (await test_client.get(url, headers=auth(lawyer))).status_code == 200
+
+
+async def test_project_options_query_count_does_not_grow(test_client, test_db, test_engine, lawyer):
+    async def count() -> int:
+        seen = []
+        listener = lambda conn, cur, statement, *a: seen.append(statement)
+        event.listen(test_engine.sync_engine, "before_cursor_execute", listener)
+        try:
+            r = await test_client.get(f"{API}/project-options", headers=auth(lawyer))
+        finally:
+            event.remove(test_engine.sync_engine, "before_cursor_execute", listener)
+        assert r.status_code == 200
+        return len(seen)
+
+    parent = Project(name="אב", is_active=True, is_parent_project=True)
+    test_db.add(parent)
+    await test_db.flush()
+    test_db.add(Project(name="ילד 0", is_active=True, relation_project=parent.id))
+    await test_db.commit()
+    before = await count()
+    test_db.add_all([Project(name=f"ילד {i}", is_active=True, relation_project=parent.id) for i in range(1, 5)])
+    await test_db.commit()
+    assert await count() == before
+
+
 # ── open-proceeding warning ──────────────────────────────────────────────────
 
 async def test_open_proceeding_warning_is_general_and_tenant_only(test_client, test_db, lawyer, colleague):
