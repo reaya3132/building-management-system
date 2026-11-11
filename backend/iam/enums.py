@@ -49,6 +49,11 @@ class ResourceType(str, Enum):
     # every project-role policy: access is granted only by global role or by an
     # explicit per-user grant, never derived from project permissions.
     COLLECTION_TASK = "collection_task"
+    # Legal proceedings (הליכים משפטיים), incl. their contacts, stages, entries and
+    # documents. Like COLLECTION_TASK: absent from every project-role policy, granted
+    # only by global role or an explicit per-user grant. The actions decide WHAT a
+    # user may do; WHICH proceedings they see follows creator / assignee / Admin.
+    LEGAL_PROCEEDING = "legal_proceeding"
     CATEGORY = "category"
     AUDIT_LOG = "audit_log"
     CONTRACT = "contract"

@@ -229,6 +229,8 @@ backend/uploads/
 !backend/migrations/*.sql
 *.xml
 *.md
+# known-issues documentation must be tracked in git
+!docs/known-issues/document-storage.md
 .cursorrules
 *.ttf
 *.iml

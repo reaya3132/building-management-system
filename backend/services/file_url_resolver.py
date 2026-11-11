@@ -7,6 +7,7 @@ single source of truth shared by task attachments and CEMS documents, so the
 signing/fallback behaviour cannot drift between features.
 """
 from functools import lru_cache
+from urllib.parse import quote
 
 from backend.core.config import settings
 from backend.services.s3_service import S3Service
@@ -22,7 +23,13 @@ def _content_disposition(filename: str) -> str:
     """Build a Content-Disposition that forces a download under the original
     filename, stripping characters that could break the header."""
     safe = (filename or "file").replace('"', "").replace("\r", "").replace("\n", "")
-    return f'attachment; filename="{safe}"'
+    try:
+        safe.encode("latin-1")
+        return f'attachment; filename="{safe}"'
+    except UnicodeEncodeError:
+        # S3 rejects header values outside ISO-8859-1 (e.g. Hebrew): use RFC 5987.
+        fallback = safe.encode("ascii", "ignore").decode().strip() or "file"
+        return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(safe, safe='')}"
 
 
 def resolve_stored_file_url(

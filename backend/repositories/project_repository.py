@@ -1,5 +1,6 @@
-from sqlalchemy import select, func
+from sqlalchemy import exists, or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from backend.models.project import Project
 from backend.repositories.base import BaseRepository
 
@@ -15,6 +16,18 @@ class ProjectRepository(BaseRepository[Project]):
             stmt = stmt.where(Project.is_active == True)  # noqa: E712
         res = await self.db.execute(stmt)
         return list(res.scalars().all())
+
+    async def project_options(self) -> "list[Project]":
+        """Active projects, plus inactive parents that still have an active
+        sub-project (shown only to group them; not selectable)."""
+        child = aliased(Project)
+        has_active_child = exists().where(child.relation_project == Project.id, child.is_active == True)  # noqa: E712
+        result = await self.db.execute(
+            select(Project)
+            .where(or_(Project.is_active == True, has_active_child))  # noqa: E712
+            .order_by(Project.name)
+        )
+        return list(result.scalars().all())
 
     async def archive(self, project: Project) -> Project:
         project.is_active = False

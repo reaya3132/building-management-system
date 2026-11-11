@@ -22,7 +22,8 @@ import {
   BookOpen,
   Package,
   SlidersHorizontal,
-  Wallet
+  Wallet,
+  Scale
 } from 'lucide-react'
 import { useTheme } from '../../contexts/ThemeContext'
 import { useInventorySettings } from '../../contexts/InventorySettingsContext'
@@ -94,6 +95,13 @@ const ALL_NAVIGATION_ITEMS: NavigationItem[] = [
     icon: Wallet,
     description: 'משימות גבייה לפי חודש חיוב',
     permission: { resource: 'collection_task' }
+  },
+  {
+    name: 'הליכים משפטיים',
+    href: '/legal-proceedings',
+    icon: Scale,
+    description: 'ניהול הליכים משפטיים',
+    permission: { resource: 'legal_proceeding' }
   },
   {
     name: 'דלפק הבניין',

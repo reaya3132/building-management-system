@@ -73,6 +73,7 @@ const RESOURCE_TYPE_LABELS: Record<string, string> = {
   building_reception: 'דלפק בניין',
   building: 'ניהול בניינים',
   collection_task: 'גבייה',
+  legal_proceeding: 'הליכים משפטיים',
   cems_warehouse: 'מחסן',
   cems_consumable: 'חומר מתכלה',
   cems_fixed_asset: 'רכוש קבוע',

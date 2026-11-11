@@ -83,6 +83,11 @@ CREATE TABLE IF NOT EXISTS collection_amount_adjustments (
 CREATE INDEX IF NOT EXISTS ix_caa_task_id ON collection_amount_adjustments (task_id);
 
 -- 4. collection_ledger_items ---------------------------------------------------
+-- Skipped once the table was renamed to ledger_items
+-- (upgrade_ledger_items_and_legal_fields.sql), so a re-run never recreates it empty.
+DO $ledger$
+BEGIN
+    IF to_regclass('public.ledger_items') IS NULL THEN
 CREATE TABLE IF NOT EXISTS collection_ledger_items (
     id                   SERIAL        NOT NULL,
     task_id              INTEGER       NOT NULL,
@@ -109,5 +114,7 @@ CREATE TABLE IF NOT EXISTS collection_ledger_items (
 
 CREATE INDEX IF NOT EXISTS ix_cli_task_id ON collection_ledger_items (task_id);
 CREATE INDEX IF NOT EXISTS ix_cli_task_id_active ON collection_ledger_items (task_id) WHERE archived_at IS NULL;
+    END IF;
+END $ledger$;
 
 COMMIT;

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Select, and_, case, distinct, exists, func, or_, select
+from sqlalchemy import Select, and_, case, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, noload, selectinload
 
@@ -264,18 +264,6 @@ class CollectionTaskRepository:
         )
         total, tasks = result.one()
         return total or 0, tasks or 0
-
-    async def project_options(self) -> list[Project]:
-        """Active projects, plus inactive parents that still have an active
-        sub-project (shown only to group them; not selectable)."""
-        child = aliased(Project)
-        has_active_child = exists().where(child.relation_project == Project.id, child.is_active == True)  # noqa: E712
-        result = await self.db.execute(
-            select(Project)
-            .where(or_(Project.is_active == True, has_active_child))  # noqa: E712
-            .order_by(Project.name)
-        )
-        return list(result.scalars().all())
 
     async def history(self, task_id: int, *, page: int, page_size: int) -> tuple[list[tuple[AuditLog, str | None]], int]:
         where = and_(AuditLog.entity == COLLECTION_AUDIT_ENTITY, AuditLog.entity_id == str(task_id))
