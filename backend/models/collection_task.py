@@ -26,15 +26,14 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
-    Integer,
     Numeric,
     String,
     Text,
-    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
+from backend.models.ledger_item import LedgerItem
 
 # ILS, two decimal places, up to 9,999,999,999.99.
 MONEY = Numeric(12, 2)
@@ -139,42 +138,5 @@ class CollectionAmountAdjustment(Base):
     created_by_user: Mapped["User"] = relationship("User", foreign_keys=[created_by_user_id])
 
 
-class CollectionLedgerItem(Base):
-    """A subject + amount line of a ``ledger`` collection task.
-
-    Items are archived (``archived_at``) rather than deleted, so the financial
-    history is never lost; only active items count towards the total.
-    """
-    __tablename__ = "collection_ledger_items"
-    __table_args__ = (
-        CheckConstraint("amount > 0", name="ck_cli_amount_positive"),
-        Index("ix_cli_task_id", "task_id"),
-        Index(
-            "ix_cli_task_id_active",
-            "task_id",
-            postgresql_where=text("archived_at IS NULL"),
-            sqlite_where=text("archived_at IS NULL"),
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    task_id: Mapped[int] = mapped_column(
-        ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False
-    )
-    subject: Mapped[str] = mapped_column(String(255), nullable=False)
-    amount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
-    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    created_by_user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
-    )
-    updated_by_user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
-    )
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    archived_by_user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
-    )
+# The shared table; the name stays for the collection code.
+CollectionLedgerItem = LedgerItem

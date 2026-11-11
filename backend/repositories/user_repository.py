@@ -13,6 +13,14 @@ class UserRepository(BaseRepository[User]):
         res = await self.db.execute(select(User).where(User.email == email))
         return res.scalar_one_or_none()
 
+    async def users_by_id(self, user_ids) -> dict[int, User]:
+        """Users of the given ids in one query (None ids are ignored)."""
+        ids = {i for i in user_ids if i is not None}
+        if not ids:
+            return {}
+        res = await self.db.execute(select(User).where(User.id.in_(ids)))
+        return {u.id: u for u in res.scalars()}
+
     async def list(self) -> list[User]:
         """Return all users that were not moved to the archive (active and inactive)."""
         res = await self.db.execute(select(User).where(User.archived_at.is_(None)))

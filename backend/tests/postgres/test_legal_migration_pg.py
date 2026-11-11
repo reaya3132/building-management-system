@@ -1,0 +1,461 @@
+"""Legal proceedings migration / rollback on a real PostgreSQL (TEST_POSTGRES_URL).
+
+Scenarios (each in its own throw-away database):
+  S1  existing production schema + data -> migrate (+ CONCURRENTLY index)
+  S2  re-run is a no-op
+  S3  create_all already provisioned the module tables -> migrate verifies + adopts
+  S4  fresh database provisioned by the new code (documents.context_key pre-exists)
+  S5  mismatching definitions stop safely, leaving nothing behind
+  S6  invalid / foreign / premature index
+  S7  rollback safety stops
+  S8  rollback: exact pre-migration schema, data intact, re-migratable
+  OWN ownership: rollback never drops what the migration does not own
+  ST  schema state: older structures, partial and unrecognised states stop
+"""
+from __future__ import annotations
+
+import pytest
+import pytest_asyncio
+
+from backend.tests.postgres import pg_utils as pg
+from backend.tests.postgres.pg_utils import CONTACTS_MIGRATION, INDEX_MIGRATION, MARKER, MIGRATION, ROLLBACK
+
+pytestmark = pytest.mark.asyncio
+
+INDEX_DEF = ("CREATE INDEX ix_documents_entity_context ON public.documents "
+             "USING btree (entity_type, entity_id, context_key)")
+
+
+async def _ok(db, path):
+    run = await pg.run_sql_file(db, path)
+    assert run.ok, f"{path.name} failed: {run.error}"
+    return run
+
+
+async def _stops(db, path, needle):
+    run = await pg.run_sql_file(db, path)
+    assert not run.ok, f"{path.name} should have stopped"
+    assert needle in run.error, run.error
+    return run
+
+
+async def _no_ref_schema(db):
+    assert await pg.query(db, "SELECT count(*) FROM pg_namespace WHERE nspname = 'legal_migration_ref'") == 0
+
+
+@pytest_asyncio.fixture
+async def dbs():
+    created: list[str] = []
+
+    async def make(suffix: str, kind: str = "production") -> str:
+        name = pg.DB_PREFIX + suffix
+        created.append(name)
+        if kind == "production":
+            await pg.production_like(name)
+        elif kind == "fresh_new_code":  # the new code's create_all on an empty database
+            await pg.create_db(name)
+            await pg.create_all(name, include_legal=True)
+        return name
+
+    yield make
+    for name in created:
+        await pg.drop_db(name)
+
+
+# ── S1 / S2 ──────────────────────────────────────────────────────────────────
+
+async def test_s1_s2_migrate_existing_schema_then_rerun(dbs):
+    db = await dbs("s1")
+    docs_before = await pg.documents_fingerprint(db)
+    assert docs_before.startswith("2000:")
+
+    await _ok(db, MIGRATION)
+    await _ok(db, INDEX_MIGRATION)
+    assert await pg.query(db, "SELECT indisvalid FROM pg_index WHERE indexrelid = 'ix_documents_entity_context'::regclass")
+    assert await pg.query(db, "SELECT pg_get_indexdef('ix_documents_entity_context'::regclass)") == INDEX_DEF
+    await _no_ref_schema(db)
+    assert await pg.documents_fingerprint(db) == docs_before
+    assert await pg.query(db, "SELECT count(*) FROM documents WHERE context_key IS NOT NULL") == 0
+    assert await pg.marked_tables(db) == 4
+    assert await pg.context_key_marker(db) == MARKER  # added by the migration
+    after_first = await pg.schema_snapshot(db)
+
+    # S2: re-run changes nothing
+    await _ok(db, MIGRATION)
+    await _ok(db, INDEX_MIGRATION)
+    assert await pg.schema_snapshot(db) == after_first
+    assert await pg.documents_fingerprint(db) == docs_before
+
+
+# ── S3 / S4 ──────────────────────────────────────────────────────────────────
+
+async def test_s3_create_all_already_ran_is_verified_and_matches_sql_path(dbs):
+    sql_path = await dbs("s3_sql")
+    await pg.migrate(sql_path)
+
+    db = await dbs("s3")
+    docs_before = await pg.documents_fingerprint(db)
+    await pg.create_all(db, include_legal=True)  # new code started before the migration
+    assert await pg.context_key_marker(db) is None  # create_all never alters documents
+    assert await pg.legal_tables_present(db) == 4
+    assert await pg.marked_tables(db) == 0
+
+    await _ok(db, MIGRATION)
+    await _ok(db, INDEX_MIGRATION)
+    assert await pg.marked_tables(db) == 4
+    assert await pg.documents_fingerprint(db) == docs_before
+    # Models and SQL produce the very same schema.
+    assert await pg.schema_snapshot(db) == await pg.schema_snapshot(sql_path)
+
+
+async def test_s4_fresh_database_keeps_pre_existing_context_key_unmarked(dbs):
+    db = await dbs("s4", "fresh_new_code")
+    assert await pg.context_key_marker(db) == ""
+    await _ok(db, MIGRATION)
+    assert await pg.context_key_marker(db) == ""  # not claimed: it existed before
+
+
+# ── S5 ───────────────────────────────────────────────────────────────────────
+
+MISMATCHES = [
+    ("ALTER TABLE legal_proceedings DROP CONSTRAINT ck_lp_title; "
+     "ALTER TABLE legal_proceedings ADD CONSTRAINT ck_lp_title CHECK (title <> '')", "ck_lp_title"),
+    ("ALTER TABLE legal_proceedings ALTER COLUMN title TYPE varchar(100)", "legal_proceedings.title"),
+    ("ALTER TABLE legal_proceeding_entries DROP CONSTRAINT fk_lpe_stage", "fk_lpe_stage"),
+    ("ALTER TABLE legal_proceeding_stages DROP CONSTRAINT legal_proceeding_stages_proceeding_id_fkey; "
+     "ALTER TABLE legal_proceeding_stages ADD CONSTRAINT legal_proceeding_stages_proceeding_id_fkey "
+     "FOREIGN KEY (proceeding_id) REFERENCES legal_proceedings(id) ON DELETE CASCADE", "ON DELETE CASCADE"),
+    ("ALTER TABLE contacts ADD COLUMN extra int", "contacts.extra"),
+    ("DROP INDEX ix_lp_project_status; CREATE INDEX ix_lp_project_status ON legal_proceedings (status)",
+     "ix_lp_project_status"),
+]
+
+
+@pytest.mark.parametrize("alter, needle", MISMATCHES, ids=[m[1] for m in MISMATCHES])
+async def test_s5_mismatching_definition_stops_without_side_effects(dbs, alter, needle):
+    db = await dbs("s5")
+    await pg.create_all(db, include_legal=True)
+    await pg.execute(db, alter)
+    await _stops(db, MIGRATION, needle)
+    await _no_ref_schema(db)
+    assert await pg.context_key_marker(db) is None  # documents untouched: rolled back
+    assert await pg.marked_tables(db) == 0
+
+
+async def test_s5_context_key_with_other_type_stops(dbs):
+    db = await dbs("s5_col", "fresh_new_code")
+    await pg.execute(db, "ALTER TABLE documents ALTER COLUMN context_key TYPE varchar(80)")
+    await _stops(db, MIGRATION, "unexpected definition")
+    assert await pg.marked_tables(db) == 0
+
+
+# ── ST: schema state detection ───────────────────────────────────────────────
+
+OLDEST_STRUCTURE = """
+DROP INDEX ix_lp_landlord_status;
+ALTER TABLE legal_proceedings DROP CONSTRAINT ck_lp_landlord;
+ALTER TABLE legal_proceedings DROP CONSTRAINT ck_lp_party_role;
+ALTER TABLE legal_proceedings DROP COLUMN landlord_contact_id;
+ALTER TABLE legal_proceedings ADD COLUMN unit_label varchar(100);
+ALTER TABLE legal_proceedings ADD COLUMN claim_amount numeric(14, 2);
+ALTER TABLE legal_proceedings ADD CONSTRAINT ck_lp_party_role CHECK (party_role IN ('owner', 'tenant', 'other'));
+"""
+
+
+async def _oldest(db):
+    await pg.create_all(db, include_legal=True)
+    for statement in filter(str.strip, OLDEST_STRUCTURE.split(";")):
+        await pg.execute(db, statement)
+
+
+async def _add_user(db) -> int:
+    await pg.execute(db, "INSERT INTO users (email, full_name, password_hash, role, is_active, created_at, requires_password_change, email_verified) "
+                         "VALUES ('legal-mig@x.io', 'Mig', 'x', 'Admin', true, now(), false, true)")
+    return await pg.query(db, "SELECT id FROM users WHERE email = 'legal-mig@x.io'")
+
+
+async def test_st_structure_before_the_upgrade_points_to_the_upgrade_file(dbs):
+    db = await dbs("st_prev")
+    await pg.migrate(db)
+    await pg.to_previous_legal_fields(db)
+    await pg.execute(db, "ALTER TABLE contacts ADD COLUMN apartment_number varchar(32)")
+    before = await pg.schema_snapshot(db)
+    await _stops(db, MIGRATION, "run upgrade_ledger_items_and_legal_fields.sql")
+    await _no_ref_schema(db)
+    assert await pg.schema_snapshot(db) == before
+
+
+async def test_st_oldest_structure_stops(dbs):
+    db = await dbs("st_old")
+    await _oldest(db)
+    before = await pg.schema_snapshot(db)
+    await _stops(db, MIGRATION, "unrecognised state")
+    await _no_ref_schema(db)
+    assert await pg.schema_snapshot(db) == before
+
+
+@pytest.mark.parametrize("missing", ["legal_proceeding_assignees", "legal_proceeding_stages"])
+async def test_st_partial_state_stops(dbs, missing):
+    db = await dbs("st_partial")
+    await pg.create_all(db, include_legal=True)
+    await pg.execute(db, f"DROP TABLE {missing} CASCADE")
+    before = await pg.schema_snapshot(db)
+    await _stops(db, MIGRATION, "partial state")
+    await _no_ref_schema(db)
+    assert await pg.schema_snapshot(db) == before
+
+
+async def test_st_contacts_without_module_tables_creates_the_module(dbs):
+    db = await dbs("st_contacts")  # production_like: contacts exists, no module table
+    contacts_before = await pg.query(db, _CONTACTS_DEFINITION)
+    await _ok(db, MIGRATION)
+    assert await pg.legal_tables_present(db) == 4
+    assert await pg.query(db, _CONTACTS_DEFINITION) == contacts_before  # contacts untouched
+    assert await pg.query(db, "SELECT obj_description('public.contacts'::regclass)") is None
+
+
+async def test_st_half_upgraded_structure_stops(dbs):
+    db = await dbs("st_mixed")
+    await _oldest(db)
+    await pg.execute(db, "ALTER TABLE legal_proceedings ADD COLUMN landlord_contact_id int")
+    before = await pg.schema_snapshot(db)
+    await _stops(db, MIGRATION, "unrecognised state")
+    assert await pg.schema_snapshot(db) == before
+
+
+async def test_st_missing_dependency_stops(dbs):
+    db = await dbs("st_dep", "none")
+    await pg.create_db(db)
+    await _stops(db, MIGRATION, "Required table public.users")
+
+
+# ── CT: contacts is a separate, general table ───────────────────────────────
+
+_CONTACTS_DEFINITION = """
+    SELECT string_agg(item, E'\\n' ORDER BY item) FROM (
+        SELECT a.attname || format_type(a.atttypid, a.atttypmod) || a.attnotnull::text AS item FROM pg_attribute a
+         WHERE a.attrelid = 'public.contacts'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+        UNION ALL SELECT conname || pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'public.contacts'::regclass
+        UNION ALL SELECT indexdef FROM pg_indexes WHERE tablename = 'contacts' AND schemaname = 'public'
+    ) s"""
+
+
+async def _old_contacts(db):
+    await pg.execute(db, "DROP INDEX ix_contacts_phone_2")
+    await pg.execute(db, "ALTER TABLE contacts DROP CONSTRAINT ck_contacts_phone")
+    await pg.execute(db, "ALTER TABLE contacts ALTER COLUMN phone DROP NOT NULL")
+
+
+async def _insert_contact(db, phone):
+    await pg.execute(db, f"INSERT INTO contacts (kind, name, phone, created_at) VALUES ('person', 'c', {phone}, now())")
+
+
+async def test_ct_absent_is_created_then_module_verifies_it(dbs):
+    reference = await dbs("ct_ref")
+    await pg.migrate(reference)
+    db = await dbs("ct_absent")
+    await pg.execute(db, "DROP TABLE contacts")
+    await _ok(db, CONTACTS_MIGRATION)
+    assert await pg.query(db, _CONTACTS_DEFINITION) == await pg.query(reference, _CONTACTS_DEFINITION)
+    assert await pg.query(db, "SELECT obj_description('public.contacts'::regclass)") is None
+    await _ok(db, MIGRATION)  # the final comparison includes contacts
+
+
+async def test_ct_current_structure_is_left_untouched(dbs):
+    db = await dbs("ct_current")
+    await _insert_contact(db, "'050'")
+    before = await pg.schema_snapshot(db)
+    await _ok(db, CONTACTS_MIGRATION)
+    assert await pg.schema_snapshot(db) == before
+    assert await pg.query(db, "SELECT count(*) FROM contacts") == 1
+
+
+async def test_ct_previous_structure_is_upgraded_keeping_rows(dbs):
+    db = await dbs("ct_old")
+    expected = await pg.query(db, _CONTACTS_DEFINITION)
+    await _old_contacts(db)
+    await _insert_contact(db, "'050-1'")
+    await _ok(db, CONTACTS_MIGRATION)
+    assert await pg.query(db, _CONTACTS_DEFINITION) == expected
+    assert await pg.query(db, "SELECT string_agg(phone, ',') FROM contacts") == "050-1"
+    snapshot = await pg.schema_snapshot(db)
+    await _ok(db, CONTACTS_MIGRATION)  # re-run: nothing changes
+    assert await pg.schema_snapshot(db) == snapshot
+    assert await pg.query(db, "SELECT count(*) FROM contacts") == 1
+
+
+@pytest.mark.parametrize("phone", ["NULL", "'   '"])
+async def test_ct_contact_without_phone_stops(dbs, phone):
+    db = await dbs("ct_nophone")
+    await _old_contacts(db)
+    await _insert_contact(db, phone)
+    before = await pg.schema_snapshot(db)
+    await _stops(db, CONTACTS_MIGRATION, "contacts without a phone=1")
+    assert await pg.schema_snapshot(db) == before
+
+
+async def test_ct_unexpected_structure_stops(dbs):
+    db = await dbs("ct_mixed")
+    await pg.execute(db, "DROP INDEX ix_contacts_phone_2")
+    before = await pg.schema_snapshot(db)
+    await _stops(db, CONTACTS_MIGRATION, "unrecognised state")
+    assert await pg.schema_snapshot(db) == before
+
+
+async def test_ct_missing_users_stops(dbs):
+    db = await dbs("ct_nousers", "none")
+    await pg.create_db(db)
+    await _stops(db, CONTACTS_MIGRATION, "Required table public.users")
+
+
+async def test_ct_module_migration_requires_contacts(dbs):
+    db = await dbs("ct_required")
+    await pg.execute(db, "DROP TABLE contacts")
+    await _stops(db, MIGRATION, "run add_contacts.sql first")
+    await _no_ref_schema(db)
+    assert await pg.legal_tables_present(db) == 0
+
+
+async def test_ct_module_migration_never_alters_previous_contacts(dbs):
+    db = await dbs("ct_prev")
+    await _old_contacts(db)
+    before = await pg.schema_snapshot(db)
+    await _stops(db, MIGRATION, "run add_contacts.sql first")
+    assert await pg.schema_snapshot(db) == before
+
+
+async def test_ct_rollback_keeps_contacts_and_its_rows(dbs):
+    db = await dbs("ct_rollback")
+    await pg.migrate(db)
+    await _insert_contact(db, "'050'")
+    await _ok(db, ROLLBACK)
+    assert await pg.legal_tables_present(db) == 0
+    assert await pg.query(db, "SELECT count(*) FROM contacts") == 1
+
+
+# ── S6 ───────────────────────────────────────────────────────────────────────
+
+async def test_s6_invalid_index_stops_then_rebuilds(dbs):
+    db = await dbs("s6")
+    await pg.migrate(db)
+    await pg.execute(db, "DROP INDEX CONCURRENTLY ix_documents_entity_context")
+    await pg.execute(db, "CREATE INDEX CONCURRENTLY ix_documents_entity_context "
+                         "ON documents (entity_type, entity_id, context_key)")
+    # Simulate an interrupted CONCURRENTLY build (needs superuser on the test server).
+    await pg.execute(db, "UPDATE pg_index SET indisvalid = false "
+                         "WHERE indexrelid = 'ix_documents_entity_context'::regclass")
+    await _stops(db, INDEX_MIGRATION, "INVALID")
+    await pg.execute(db, "DROP INDEX CONCURRENTLY ix_documents_entity_context")
+    await _ok(db, INDEX_MIGRATION)
+    assert await pg.query(db, "SELECT indisvalid FROM pg_index WHERE indexrelid = 'ix_documents_entity_context'::regclass")
+
+
+async def test_s6_index_with_other_definition_stops(dbs):
+    db = await dbs("s6_def")
+    await _ok(db, MIGRATION)
+    await pg.execute(db, "CREATE INDEX ix_documents_entity_context ON documents (entity_id)")
+    await _stops(db, INDEX_MIGRATION, "unexpected definition")
+
+
+async def test_s6_index_file_before_migration_stops(dbs):
+    db = await dbs("s6_pre")
+    await _stops(db, INDEX_MIGRATION, "run add_legal_proceedings.sql first")
+
+
+# ── S7 / S8 ──────────────────────────────────────────────────────────────────
+
+async def test_s7_rollback_safety_stops_change_nothing(dbs):
+    db = await dbs("s7")
+    await pg.migrate(db)
+    migrated = await pg.schema_snapshot(db)
+
+    user = await _add_user(db)
+    await pg.execute(db, "INSERT INTO contacts (kind, name, phone, created_at) VALUES ('person', 'x', '1', now())")
+    contact = await pg.query(db, "SELECT max(id) FROM contacts")
+    await pg.execute(db, "INSERT INTO legal_proceedings (contact_id, party_role, title, status, "
+                         f"opened_at, created_by, created_at) VALUES ({contact}, 'other', 't', 'open', now(), {user}, now())")
+    await _stops(db, ROLLBACK, "holds 1 row")
+    await pg.execute(db, "DELETE FROM legal_proceedings")
+    await pg.execute(db, "DELETE FROM contacts")
+
+    await pg.execute(db, "INSERT INTO documents (entity_type, entity_id, file_path, uploaded_at, source_table, "
+                         "source_id) VALUES ('legal_proceeding_entry', 1, 'k', now(), '', 0)")
+    await _stops(db, ROLLBACK, "legal document")
+    await pg.execute(db, "DELETE FROM documents WHERE entity_type = 'legal_proceeding_entry'")
+
+    await pg.execute(db, "UPDATE documents SET context_key = 'other' WHERE id = 1")
+    await _stops(db, ROLLBACK, "non-legal")
+    await pg.execute(db, "UPDATE documents SET context_key = NULL WHERE id = 1")
+
+    await pg.execute(db, "COMMENT ON INDEX ix_documents_entity_context IS NULL")
+    await _stops(db, ROLLBACK, "without the ownership marker")
+    await pg.execute(db, f"COMMENT ON INDEX ix_documents_entity_context IS '{MARKER}'")
+
+    assert await pg.schema_snapshot(db) == migrated  # every stop left the schema untouched
+
+
+async def test_s8_rollback_restores_exact_schema_and_allows_remigration(dbs):
+    db = await dbs("s8")
+    before = await pg.schema_snapshot(db)
+    docs_before = await pg.documents_fingerprint(db)
+    await pg.migrate(db)
+
+    await _ok(db, ROLLBACK)
+    assert await pg.schema_snapshot(db) == before
+    assert await pg.documents_fingerprint(db) == docs_before
+
+    await pg.migrate(db)  # migrate again after rollback
+    assert await pg.marked_tables(db) == 4
+
+
+async def test_s8_rollback_keeps_pre_existing_context_key(dbs):
+    db = await dbs("s8_fresh", "fresh_new_code")
+    await pg.migrate(db)
+    run = await _ok(db, ROLLBACK)
+    assert await pg.context_key_marker(db) == ""  # kept
+    assert any("Kept documents.context_key" in n for n in run.notices)
+    assert await pg.legal_tables_present(db) == 0
+
+
+# ── OWN: ownership ───────────────────────────────────────────────────────────
+
+async def test_own_rollback_without_migration_drops_nothing(dbs):
+    """create_all provisioned everything but the migration never ran: nothing is
+    marked, so rollback must keep every table and the column."""
+    db = await dbs("own_unmarked", "fresh_new_code")
+    before = await pg.schema_snapshot(db)
+    run = await _ok(db, ROLLBACK)
+    assert await pg.schema_snapshot(db) == before
+    assert sum("no ownership marker" in n for n in run.notices) == 4  # contacts is not the module's
+    assert any("Kept documents.context_key" in n for n in run.notices)
+
+
+async def test_own_rollback_never_touches_objects_outside_the_module(dbs):
+    """Rollback after a migration: the rest of the schema (every table, column,
+    constraint, index and comment outside the module) is byte-for-byte unchanged."""
+    db = await dbs("own_rest")
+    await pg.execute(db, "COMMENT ON TABLE documents IS 'pre-existing comment'")
+    await pg.execute(db, "CREATE INDEX ix_custom_documents_entity ON documents (entity_type)")
+    before = await pg.schema_snapshot(db)
+    await pg.migrate(db)
+    await _ok(db, ROLLBACK)
+    assert await pg.schema_snapshot(db) == before
+
+
+FOREIGN_DEPENDENCIES = [
+    ("view", "CREATE VIEW v_open_proceedings AS SELECT id FROM legal_proceedings WHERE status = 'open'"),
+    ("fk", "CREATE TABLE other_module (id int PRIMARY KEY, proceeding_id int REFERENCES legal_proceedings (id))"),
+    ("context_key index", "CREATE INDEX ix_other_module_ctx ON documents (context_key)"),
+]
+
+
+@pytest.mark.parametrize("kind, ddl", FOREIGN_DEPENDENCIES, ids=[d[0] for d in FOREIGN_DEPENDENCIES])
+async def test_own_foreign_dependency_stops_rollback_before_any_change(dbs, kind, ddl):
+    """An object outside the module that depends on what rollback would drop must stop
+    it before ANYTHING is dropped — including the CONCURRENTLY index of step 2."""
+    db = await dbs("own_dep")
+    await pg.migrate(db)
+    await pg.execute(db, ddl)
+    migrated = await pg.schema_snapshot(db)
+    await _stops(db, ROLLBACK, "objects outside the module depend on it")
+    assert await pg.schema_snapshot(db) == migrated

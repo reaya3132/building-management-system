@@ -21,6 +21,9 @@ class Document(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
     )
+    # Optional sub-context inside the entity (e.g. a legal stage component
+    # "<stage_key>.<component_key>"); NULL for every other module's documents.
+    context_key: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
     source_table: Mapped[str] = mapped_column(String(30), default="")
     source_id: Mapped[int] = mapped_column(Integer, default=0)
 

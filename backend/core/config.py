@@ -43,6 +43,11 @@ class Settings(BaseModel):
     def is_production(self) -> bool:
         return os.getenv("ENVIRONMENT", "development").lower() == "production"
 
+    @property
+    def external_alerts_enabled(self) -> bool:
+        """External error alerts: as configured, but never under ENVIRONMENT=test."""
+        return self.ERROR_ALERTS_ENABLED and os.getenv("ENVIRONMENT", "development").lower() != "test"
+
     def validate_security(self):
         """Validate that security-critical settings are properly configured."""
         import logging

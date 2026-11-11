@@ -56,6 +56,11 @@ _GLOBAL_ROLE_POLICIES: dict[str, dict[str, set[str]]] = {
         ResourceType.COLLECTION_TASK.value: {
             Action.READ.value, Action.WRITE.value, Action.UPDATE.value,
         },
+        # Legal proceedings: read / write (create proceedings and contacts) / update
+        # (edit, stages, entries, documents, close / reopen, assign) / delete (remove
+        # entries and documents written by OTHER users). Proceedings themselves are
+        # never deleted — there is no delete endpoint for them.
+        ResourceType.LEGAL_PROCEEDING.value: _ALL_ACTIONS,
         ResourceType.CATEGORY.value: _ALL_ACTIONS,
         ResourceType.AUDIT_LOG.value: {Action.READ.value},
         ResourceType.CONTRACT.value: _ALL_ACTIONS,

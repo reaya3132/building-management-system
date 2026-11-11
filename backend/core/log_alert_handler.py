@@ -85,9 +85,9 @@ def setup_whatsapp_log_handler() -> None:
     """
     from backend.core.config import settings
 
-    if not settings.ERROR_ALERTS_ENABLED:
+    if not settings.external_alerts_enabled:
         logging.getLogger(__name__).info(
-            "WhatsApp error alerts are disabled (ERROR_ALERTS_ENABLED=false)."
+            "WhatsApp error alerts are disabled (ERROR_ALERTS_ENABLED=false or ENVIRONMENT=test)."
         )
         return
 

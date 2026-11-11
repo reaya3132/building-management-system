@@ -81,7 +81,7 @@ def send_whatsapp_alert(
     """
     from backend.core.config import settings
 
-    if not settings.ERROR_ALERTS_ENABLED:
+    if not settings.external_alerts_enabled:
         return
 
     if not settings.GREEN_API_INSTANCE_ID or not settings.GREEN_API_TOKEN or not settings.ALERT_PHONE:
