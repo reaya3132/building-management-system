@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.configurations.legal.stages import STAGE_KEYS, StageDefinition, STAGES
 from backend.iam.enums import Action
 from backend.models.contact import Contact
+from backend.models.ledger_item import LedgerItem, LedgerItemType
 from backend.models.user import User
 from backend.models.legal_proceeding import (
     LEGAL_PROCEEDING_AUDIT_ENTITY,
@@ -43,10 +44,11 @@ from backend.services.legal_access import changed_fields, clean_text, is_admin, 
 
 IMMUTABLE_PARTY_FIELDS = ("contact_id", "party_role", "landlord_contact_id")
 # Required on every party of a proceeding (contacts themselves only require name and phone).
-REQUIRED_PARTY_FIELDS = ("name", "phone", "email", "address")
-INCOMPLETE_CARD_MESSAGE = "חסרים פרטי חובה בכרטיס איש הקשר. יש לפנות למנהל להשלמת הפרטים."
+PRIMARY_PARTY_FIELDS = ("name", "phone", "email", "address", "apartment_number")
+LINKED_LANDLORD_FIELDS = ("name", "phone")
+INCOMPLETE_CARD_MESSAGE = "חסרים פרטי חובה בכרטיס איש הקשר. יש להשלים את הפרטים החסרים."
 OPEN_PROCEEDING_WARNING = "לאיש קשר זה כבר קיים הליך משפטי פתוח. האם להמשיך?"
-_MAX_AMOUNT = Decimal("999999999999.99")  # NUMERIC(14, 2)
+_MAX_AMOUNT = Decimal("9999999999.99")  # NUMERIC(12, 2)
 
 
 def _amount(value) -> Decimal | None:
@@ -71,7 +73,7 @@ def _audit_value(value):
 
 def snapshot(p: LegalProceeding) -> dict:
     return {k: _audit_value(getattr(p, k)) for k in (
-        "contact_id", "project_id", "party_role", "landlord_contact_id", "apartment_number", "title", "claim_details", "claim_amount",
+        "contact_id", "project_id", "party_role", "landlord_contact_id", "title", "claim_details",
         "status", "opened_at", "closed_at", "closed_by", "close_reason")}
 
 
@@ -114,6 +116,8 @@ class ProceedingDetail:
     project_name: str | None
     stages: list[tuple[StageDefinition, LegalProceedingStage]]
     progress: Progress
+    ledger_items: list[LedgerItem]
+    total_amount: Decimal
     assignee_ids: list[int]
     users: dict[int, User]          # creator, closer, stage resolvers
     can_update: bool
@@ -156,44 +160,71 @@ class LegalProceedingService:
             data["title"] = clean_text(values["title"], limit=255, field_name="title")
             if not data["title"]:
                 raise legal_error(422, "title_required", "A title is required")
-        if "apartment_number" in values:
-            data["apartment_number"] = clean_text(values["apartment_number"], limit=32, field_name="apartment_number")
-            if not data["apartment_number"]:
-                raise legal_error(422, "apartment_number_required", "An apartment number is required")
         if "claim_details" in values:
             data["claim_details"] = clean_text(values["claim_details"])
-        if "claim_amount" in values:
-            data["claim_amount"] = _amount(values["claim_amount"])
         return data
+
+    @staticmethod
+    def _ledger_values(values: dict) -> dict:
+        """A valid subject / amount of a ledger item (only the keys that were sent)."""
+        data: dict = {}
+        if "subject" in values:
+            data["subject"] = clean_text(values["subject"], limit=255, field_name="subject")
+            if not data["subject"]:
+                raise legal_error(422, "ledger_subject_required", "A ledger item needs a subject")
+        if "amount" in values:
+            data["amount"] = _amount(values["amount"])
+            if data["amount"] is None:
+                raise legal_error(422, "invalid_amount", "The amount must be greater than 0 with at most two decimals")
+        return data
+
+    def _validated_base_items(self, items) -> list[dict]:
+        """Every path that opens a proceeding comes through here: at least one base item."""
+        if not items:
+            raise legal_error(422, "base_items_required", "A proceeding needs at least one base amount")
+        checked = []
+        for item in items:
+            missing = [key for key in ("subject", "amount") if key not in item]
+            if missing:
+                raise legal_error(422, "base_items_required", "A base amount needs a subject and an amount", fields=missing)
+            checked.append(self._ledger_values(item))
+        return checked
 
     async def _resolve_parties(self, party_role: str, contact: dict, landlord: dict | None,
                                confirm_duplicate: bool) -> tuple[Contact, Contact | None, bool]:
         """The contact (and, for a tenant, the landlord) of a new proceeding: each an
-        existing card, used exactly as it is, or a new one. Selecting never changes a
-        card; missing details are completed through an explicit contact edit first.
-        Selected cards are locked in id order, so the required-details check holds."""
+        existing card or a new one. Selecting alone never changes a card; only an
+        explicit ``complete`` fills fields that are empty on it. Required details depend
+        on the party's role in this proceeding. New phones are locked first, then the
+        selected cards in id order, so the checks below hold until the commit."""
         if party_role != PartyRole.TENANT and landlord:
             raise legal_error(422, "landlord_not_allowed", "Only a tenant's proceeding has a linked landlord")
         if party_role == PartyRole.TENANT and not landlord:
             raise legal_error(422, "landlord_required", "A tenant's proceeding requires a landlord")
         selections = [("contact", contact)] + ([("landlord", landlord)] if landlord else [])
         contacts = ContactService(self.db, self.user)
-        await contacts.lock_phones_of([s["details"] for _, s in selections if not s.get("contact_id") and s.get("details")])
+        await contacts.lock_phones_of([s.get("complete") or {} if s.get("contact_id") else s.get("details") or {}
+                                       for _, s in selections])
         locked = await ContactRepository(self.db).lock_many([s["contact_id"] for _, s in selections if s.get("contact_id")])
         resolved: dict[str, Contact] = {}
         has_match = False
         for party, selection in selections:
             contact_id = selection.get("contact_id")
+            required = LINKED_LANDLORD_FIELDS if party == "landlord" else PRIMARY_PARTY_FIELDS
             if contact_id:
                 card = locked.get(contact_id)
                 if card is None:
                     raise legal_error(422, "contact_not_found", "The contact does not exist", contact_id=contact_id)
                 if not card.is_active:
                     raise legal_error(422, "contact_inactive", "The contact is inactive")
+                if selection.get("complete"):
+                    matched = await contacts.complete_missing(card, selection["complete"], allowed={*required, "phone_2"},
+                                                              confirm_duplicate=confirm_duplicate)
+                    has_match = has_match or matched
             else:
                 created = await contacts.create(selection.get("details") or {}, confirm_duplicate=confirm_duplicate)
                 card, has_match = created.contact, has_match or created.has_match
-            missing = [f for f in REQUIRED_PARTY_FIELDS if not getattr(card, f)]
+            missing = [f for f in required if not getattr(card, f)]
             if missing:
                 message = INCOMPLETE_CARD_MESSAGE if contact_id else "Required contact details are missing"
                 raise legal_error(422, "contact_details_incomplete", message, party=party, missing=missing)
@@ -210,10 +241,11 @@ class LegalProceedingService:
         await self.access.require(Action.WRITE.value)
         if not contact or not (contact.get("contact_id") or contact.get("details")):
             raise legal_error(422, "contact_required", "Select an existing contact or provide a new one")
-        for required in ("party_role", "title", "apartment_number"):
+        for required in ("party_role", "title"):
             if required not in values:
                 raise legal_error(422, f"{required}_required", f"{required} is required")
         data = self._validated_fields(values)
+        base_items = self._validated_base_items(values.get("base_items"))
         project_id = await self._validate_project(values.get("project_id"))
         had_open = (data["party_role"] == PartyRole.TENANT and bool(contact.get("contact_id"))
                     and await self.repo.has_open_tenant_proceeding(contact["contact_id"]))
@@ -230,9 +262,13 @@ class LegalProceedingService:
         await self.repo.add(proceeding)
         for key in STAGE_KEYS:
             self.db.add(LegalProceedingStage(proceeding_id=proceeding.id, stage_key=key, status=StageStatus.PENDING))
+        for position, item in enumerate(base_items):
+            self.db.add(LedgerItem(legal_proceeding_id=proceeding.id, item_type=LedgerItemType.BASE_AMOUNT,
+                                   sort_order=position, created_by_user_id=self.user.id, **item))
         await self.db.flush()
         await self._log(proceeding.id, LegalEvent.CREATED, {
             "after": snapshot(proceeding),
+            "base_items": [{"subject": i["subject"], "amount": _audit_value(i["amount"])} for i in base_items],
             "had_open_proceeding": had_open,
         })
         return CreateResult(proceeding, primary, has_match)
@@ -240,8 +276,7 @@ class LegalProceedingService:
     # ── edit ─────────────────────────────────────────────────────────────────
 
     async def update(self, proceeding_id: int, values: dict) -> LegalProceeding:
-        """Claim details, amount, apartment number, title, project. The parties are
-        not editable here."""
+        """Claim details, title, project. The parties are not editable here."""
         changed = [f for f in IMMUTABLE_PARTY_FIELDS if f in values]
         if changed:
             raise legal_error(422, "contact_immutable", "The parties of a proceeding cannot be changed here",
@@ -287,13 +322,71 @@ class LegalProceedingService:
         await self._log(proceeding.id, LegalEvent.REOPENED, {"previous_close": previous, "reason": clean_text(reason)})
         return proceeding
 
+    # ── ledger ───────────────────────────────────────────────────────────────
+
+    async def _load_for_ledger(self, proceeding_id: int) -> LegalProceeding:
+        """``update`` + visibility + open, holding the proceeding's row: serializes every
+        change to its items, and against closing it."""
+        return await self.access.load(proceeding_id, Action.UPDATE.value, for_update=True, require_open=True)
+
+    async def _active_ledger_item(self, proceeding_id: int, item_id: int) -> LedgerItem:
+        item = await self.repo.get_ledger_item(proceeding_id, item_id)
+        if item is None:
+            raise legal_error(404, "ledger_item_not_found", "Ledger item not found")
+        if item.archived_at is not None:
+            raise legal_error(409, "ledger_item_archived", "The ledger item is archived")
+        return item
+
+    async def add_ledger_item(self, proceeding_id: int, values: dict) -> LedgerItem:
+        """An addition; base amounts are created only with the proceeding."""
+        proceeding = await self._load_for_ledger(proceeding_id)
+        data = self._ledger_values(values)
+        item = LedgerItem(legal_proceeding_id=proceeding.id, item_type=LedgerItemType.ADDITION,
+                          sort_order=await self.repo.next_ledger_sort_order(proceeding.id),
+                          created_by_user_id=self.user.id, **data)
+        await self.repo.add(item)
+        await self._log(proceeding.id, LegalEvent.LEDGER_ITEM_ADDED, {
+            "item_id": item.id, "item_type": item.item_type,
+            "after": {"subject": item.subject, "amount": _audit_value(item.amount)}})
+        return item
+
+    async def update_ledger_item(self, proceeding_id: int, item_id: int, values: dict) -> LedgerItem:
+        proceeding = await self._load_for_ledger(proceeding_id)
+        item = await self._active_ledger_item(proceeding.id, item_id)
+        data = self._ledger_values(values)
+        before = {"subject": item.subject, "amount": _audit_value(item.amount)}
+        for key, value in data.items():
+            setattr(item, key, value)
+        old, new = changed_fields(before, {"subject": item.subject, "amount": _audit_value(item.amount)})
+        if new:
+            item.updated_by_user_id = self.user.id
+            await self.db.flush()
+            await self._log(proceeding.id, LegalEvent.LEDGER_ITEM_UPDATED, {
+                "item_id": item.id, "item_type": item.item_type, "before": old, "after": new})
+        return item
+
+    async def archive_ledger_item(self, proceeding_id: int, item_id: int) -> LedgerItem:
+        proceeding = await self._load_for_ledger(proceeding_id)
+        item = await self._active_ledger_item(proceeding.id, item_id)
+        if item.item_type == LedgerItemType.BASE_AMOUNT:
+            raise legal_error(409, "base_item_not_archivable", "A base amount can be edited but not archived")
+        item.archived_at, item.archived_by_user_id = utc_now(), self.user.id
+        await self.db.flush()
+        await self._log(proceeding.id, LegalEvent.LEDGER_ITEM_ARCHIVED, {
+            "item_id": item.id, "item_type": item.item_type,
+            "before": {"subject": item.subject, "amount": _audit_value(item.amount)}})
+        return item
+
+    async def ledger_total(self, proceeding_id: int) -> Decimal:
+        return await self.repo.ledger_total(proceeding_id)
+
     # ── read ─────────────────────────────────────────────────────────────────
 
     async def get(self, proceeding_id: int) -> LegalProceeding:
         return await self.access.load(proceeding_id)
 
     async def detail(self, proceeding_id: int) -> ProceedingDetail:
-        """Everything the proceeding page shows at the top (6 queries)."""
+        """Everything the proceeding page shows at the top (a fixed number of queries)."""
         p = await self.access.load(proceeding_id)
         return await self.detail_of(p)
 
@@ -308,6 +401,7 @@ class LegalProceedingService:
         can_update = await self.access.allowed(Action.UPDATE.value)
         return ProceedingDetail(
             p, contact, landlord, project.name if project else None, ordered_stages(stages), progress_of(stages),
+            await self.repo.ledger_items(p.id), await self.repo.ledger_total(p.id),
             [a.user_id for a in assignees], users, can_update,
             can_update and (is_admin(self.user) or self.access.is_primary_owner(p)),
             await self.access.allowed(Action.DELETE.value),

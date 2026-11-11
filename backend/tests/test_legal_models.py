@@ -45,6 +45,18 @@ def test_catalogue_order_and_components():
     assert catalogue.stage_position("lawyer_warning") == 4
 
 
+def test_the_five_fixed_stages_and_their_names():
+    assert [(s.key, s.label) for s in catalogue.STAGES] == [
+        ("collection_messages", "שליחת הודעות גבייה"),
+        ("first_door_notice", "מכתב ראשון על הדלת"),
+        ("second_door_notice", "מכתב נוסף על הדלת"),
+        ("lawyer_warning", 'מכתב התראה מעו"ד'),
+        ("supervisor_claim", "תביעה מול המפקחת"),
+    ]
+    decision = dict((c.key, c.label) for c in catalogue.get_stage("supervisor_claim").components)
+    assert decision == {"claim_filing": "פתיחת הליך התביעה", "supervisor_decision": "החלטת המפקחת"}
+
+
 def test_component_validation_and_document_context_key():
     assert catalogue.is_valid_component("lawyer_warning", "registered_mail_signature")
     assert not catalogue.is_valid_component("first_door_notice", "lawyer_letter")
@@ -66,7 +78,7 @@ async def base(test_db, admin_user):
     test_db.add_all([contact, landlord])
     await test_db.flush()
     proc = LegalProceeding(contact_id=contact.id, landlord_contact_id=landlord.id, party_role="tenant",
-                           apartment_number="4", title="חוב ועד בית", created_by=admin_user.id)
+                           title="חוב ועד בית", created_by=admin_user.id)
     test_db.add(proc)
     await test_db.flush()
     for key in catalogue.STAGE_KEYS:
@@ -110,14 +122,10 @@ async def test_proceeding_amount_and_close_constraints(base):
     db, user, contact = base["db"], base["user"], base["contact"]
 
     def proc(**kw):
-        values = dict(contact_id=contact.id, party_role="landlord", apartment_number="4", title="t", created_by=user.id)
+        values = dict(contact_id=contact.id, party_role="landlord", title="t", created_by=user.id)
         values.update(kw)
         return LegalProceeding(**values)
 
-    await _rejects(db, proc(claim_amount=Decimal("0")))
-    await _rejects(db, proc(claim_amount=Decimal("-1")))
-    await _accepts(db, proc(claim_amount=Decimal("1250.50")))
-    await _accepts(db, proc(claim_amount=None))
     await _rejects(db, proc(party_role="judge"))
     await _rejects(db, proc(title=" "))
     # closed requires closed_at + closed_by + a non-blank reason
@@ -136,7 +144,7 @@ async def test_party_landlord_and_apartment_constraints(base):
     db, user, contact, landlord = base["db"], base["user"], base["contact"], base["landlord"]
 
     def proc(**kw):
-        return LegalProceeding(**{**dict(contact_id=contact.id, apartment_number="4", title="t", created_by=user.id), **kw})
+        return LegalProceeding(**{**dict(contact_id=contact.id, title="t", created_by=user.id), **kw})
 
     await _accepts(db, proc(party_role="tenant", landlord_contact_id=landlord.id))
     await _rejects(db, proc(party_role="tenant"))                 # a tenant needs a landlord
@@ -144,15 +152,13 @@ async def test_party_landlord_and_apartment_constraints(base):
         await _accepts(db, proc(party_role=role))
         await _rejects(db, proc(party_role=role, landlord_contact_id=landlord.id))
     await _rejects(db, proc(party_role="owner"))                  # the old value is gone
-    await _rejects(db, proc(party_role="other", apartment_number=None))
-    await _rejects(db, proc(party_role="other", apartment_number="  "))
 
 
 @pytest.mark.asyncio
 async def test_landlord_id_in_python_and_sql(base):
     db, user, landlord = base["db"], base["user"], base["landlord"]
     tenant_case = base["proc"]
-    other = LegalProceeding(contact_id=landlord.id, party_role="landlord", apartment_number="9", title="t", created_by=user.id)
+    other = LegalProceeding(contact_id=landlord.id, party_role="landlord", title="t", created_by=user.id)
     await _accepts(db, other)
     assert tenant_case.landlord_id == landlord.id and other.landlord_id is None
     rows = dict((await db.execute(select(LegalProceeding.id, LegalProceeding.landlord_id))).all())
@@ -164,7 +170,7 @@ async def test_landlord_id_in_python_and_sql(base):
 @pytest.mark.asyncio
 async def test_stage_constraints(base):
     db, user, proc = base["db"], base["user"], base["proc"]
-    other = LegalProceeding(contact_id=base["contact"].id, party_role="other", apartment_number="4", title="t2",
+    other = LegalProceeding(contact_id=base["contact"].id, party_role="other", title="t2",
                             created_by=user.id)
     await _accepts(db, other)
     await _rejects(db, LegalProceedingStage(proceeding_id=proc.id, stage_key=catalogue.STAGE1_KEY))  # unique

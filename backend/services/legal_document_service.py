@@ -80,6 +80,11 @@ class DocumentView:
     def download_url(self) -> str:
         return DocumentStorageService.url(self.document.file_path, download_filename=self.document.file_name)
 
+    @property
+    def preview_url(self) -> str:
+        """The same file without a forced download, for viewing inside the page."""
+        return DocumentStorageService.url(self.document.file_path)
+
 
 class LegalDocumentService:
     def __init__(self, db: AsyncSession, user):

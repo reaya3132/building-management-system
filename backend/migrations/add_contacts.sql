@@ -7,6 +7,7 @@
 --                           ix_contacts_phone_2 are added, after checking the data;
 --                           no row is changed and the file stops if any contact has
 --                           no phone;
+--   without apartment_number -> the column is added (nullable, no row changes);
 --   current structure    -> nothing is changed;
 --   anything else        -> stops without changing anything.
 -- The definition mirrors backend/models/contact.py and the expected definition used
@@ -26,6 +27,7 @@ DECLARE
     has_ck_phone boolean;
     has_ix_phone_2 boolean;
     n_no_phone bigint;
+    has_apartment boolean;
 BEGIN
     IF to_regclass('public.users') IS NULL THEN
         RAISE EXCEPTION 'Required table public.users is missing: cannot apply the contacts migration';
@@ -41,6 +43,7 @@ BEGIN
         phone       VARCHAR(50)   NOT NULL,
         phone_2     VARCHAR(50)   NULL,
         address     VARCHAR(500)  NULL,
+        apartment_number VARCHAR(32) NULL,
         notes       TEXT          NULL,
         is_active   BOOLEAN       NOT NULL DEFAULT true,
         created_by  INTEGER       NULL,
@@ -64,9 +67,16 @@ BEGIN
     has_ck_phone := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.contacts'::regclass
                              AND conname = 'ck_contacts_phone');
     has_ix_phone_2 := to_regclass('public.ix_contacts_phone_2') IS NOT NULL;
+    has_apartment := EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+                              AND table_name = 'contacts' AND column_name = 'apartment_number');
 
     IF phone_nullable IS FALSE AND has_ck_phone AND has_ix_phone_2 THEN
-        RAISE NOTICE 'Contacts state: current; nothing to do';
+        IF has_apartment THEN
+            RAISE NOTICE 'Contacts state: current; nothing to do';
+        ELSE
+            RAISE NOTICE 'Contacts state: without apartment_number; adding it';
+            ALTER TABLE public.contacts ADD COLUMN apartment_number VARCHAR(32) NULL;
+        END IF;
         RETURN;
     END IF;
     IF phone_nullable IS NOT TRUE OR has_ck_phone OR has_ix_phone_2 THEN
@@ -86,6 +96,9 @@ BEGIN
         ALTER COLUMN phone SET NOT NULL,
         ADD CONSTRAINT ck_contacts_phone CHECK (trim(phone) <> '');
     CREATE INDEX ix_contacts_phone_2 ON public.contacts (phone_2);
+    IF NOT has_apartment THEN
+        ALTER TABLE public.contacts ADD COLUMN apartment_number VARCHAR(32) NULL;
+    END IF;
 END $$;
 
 COMMIT;

@@ -3,8 +3,9 @@
 There is no separate IAM resource for contacts yet: they are managed through the
 ``legal_proceeding`` permissions. Searching and creating need ``write`` (they are
 done while opening a proceeding); viewing needs ``read``, and a non-Admin may view only
-a contact of a proceeding they can see. Only Admin / SuperAdmin edit a card. Changes
-are recorded in ``audit_logs`` (entity='contact') with before/after values.
+a contact of a proceeding they can see. Only Admin / SuperAdmin edit a card; whoever
+opens a proceeding may only fill the empty fields of its parties (``complete_missing``,
+inside that transaction, with no route of its own). Changes are recorded in ``audit_logs`` (entity='contact') with before/after values.
 Phones are stored normalized (digits only, Israeli numbers in local 0... form), so
 every comparison is on the normalized value. A phone already on an active contact
 stops the creation until the user explicitly confirms it (general answer only).
@@ -23,11 +24,11 @@ from backend.repositories.contact_repository import ContactRepository
 from backend.services.audit_service import AuditService
 from backend.services.legal_access import changed_fields, is_admin, legal_error, LegalAccess, utc_now
 
-CONTACT_FIELDS = ("kind", "name", "email", "phone", "phone_2", "address", "notes", "is_active")
-OPEN_PROCEEDING_REQUIRED = ("email", "address")  # cannot be cleared while a proceeding of the contact is open
+CONTACT_FIELDS = ("kind", "name", "email", "phone", "phone_2", "address", "apartment_number", "notes", "is_active")
+OPEN_PROCEEDING_REQUIRED = ("email", "address", "apartment_number")  # cannot be cleared while the contact is the primary party of an open proceeding
 DUPLICATE_PHONE_UPDATE_WARNING = "מספר הטלפון כבר קיים אצל איש קשר אחר. האם לשמור בכל זאת?"
 DUPLICATE_PHONE_WARNING = "מספר הטלפון כבר קיים אצל איש קשר אחר. האם ליצור איש קשר חדש בכל זאת?"
-_MAX_LEN = {"name": 255, "email": 255, "phone": 50, "phone_2": 50, "address": 500}
+_MAX_LEN = {"name": 255, "email": 255, "phone": 50, "phone_2": 50, "address": 500, "apartment_number": 32}
 
 
 def _local_digits(digits: str) -> str:
@@ -135,6 +136,32 @@ class ContactService:
         await self._log(contact.id, "created", {"after": snapshot(contact),
                                                 **({"duplicate_phone_confirmed": True} if has_match else {})})
         return ContactCreateResult(contact, has_match)
+
+    async def complete_missing(self, contact: Contact, values: dict, *, allowed: set[str],
+                               confirm_duplicate: bool = False) -> bool:
+        """Fill empty fields of a card while a proceeding is opened; never changes a value
+        it holds. ``contact`` is locked by the caller, which also locked the new phones
+        first. Returns whether a new phone is already on another active contact."""
+        await self.access.require(Action.WRITE.value)
+        data = {k: v for k, v in clean_contact_values(values, partial=True).items() if v is not None}
+        rejected = sorted(f for f in data if f not in allowed or getattr(contact, f))
+        if rejected:
+            raise legal_error(422, "contact_field_not_missing", "Only missing fields can be completed", fields=rejected)
+        if not data:
+            return False
+        has_match = bool(await self.repo.find_similar(phones=[data[k] for k in ("phone", "phone_2") if k in data],
+                                                      exclude_id=contact.id, limit=1))
+        if has_match and not confirm_duplicate:
+            raise legal_error(409, "duplicate_phone", DUPLICATE_PHONE_UPDATE_WARNING, has_match=True)
+        before = snapshot(contact)
+        for key, value in data.items():
+            setattr(contact, key, value)
+        contact.updated_at = utc_now()
+        await self.db.flush()
+        old, new = changed_fields(before, snapshot(contact), CONTACT_FIELDS)
+        await self._log(contact.id, "completed_on_proceeding_create",
+                        {"before": old, "after": new, **({"duplicate_phone_confirmed": True} if has_match else {})})
+        return has_match
 
     async def _load_visible(self, contact_id: int, action: str, *, for_update: bool = False) -> Contact:
         await self.access.require(action)

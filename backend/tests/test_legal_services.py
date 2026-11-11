@@ -122,12 +122,12 @@ async def team(test_db, admin_user):
     return {"db": test_db, "admin": admin_user, "lawyer": lawyer, "helper": helper, "outsider": outsider}
 
 
-async def open_proceeding(db, user, *, contact_id=None, project_id=None, **values):
-    payload = {"party_role": "other", "apartment_number": "4", "title": "חוב ועד בית", **values}
+async def open_proceeding(db, user, *, contact_id=None, project_id=None, amount="100", **values):
+    payload = {"party_role": "other", "title": "חוב ועד בית", "base_items": [{"subject": "בסיס", "amount": amount}], **values}
     if project_id is not None:
         payload["project_id"] = project_id
     contact = {"contact_id": contact_id} if contact_id else {"details": {
-        "kind": "person", "name": "דייר א", "phone": "050-1111111", "email": "p@example.com", "address": "רחוב 1"}}
+        "kind": "person", "name": "דייר א", "phone": "050-1111111", "email": "p@example.com", "address": "רחוב 1", "apartment_number": "4"}}
     result = await LegalProceedingService(db, user).create(payload, contact=contact, confirm_duplicate_contact=True)
     await db.commit()
     return result
@@ -228,14 +228,14 @@ async def test_assignment_rules(team, test_db):
 
 async def test_create_builds_stages_and_never_blocks_other_roles(team):
     db, lawyer, admin = team["db"], team["lawyer"], team["admin"]
-    first = await open_proceeding(db, admin, claim_amount="1250.50")
-    assert first.proceeding.claim_amount == Decimal("1250.50")
+    first = await open_proceeding(db, admin, amount="1250.50")
+    assert await LegalProceedingService(db, admin).ledger_total(first.proceeding.id) == Decimal("1250.50")
     stages = (await db.execute(select(LegalProceedingStage.stage_key, LegalProceedingStage.status)
                                 .where(LegalProceedingStage.proceeding_id == first.proceeding.id))).all()
     assert sorted(stages) == sorted((k, "pending") for k in STAGE_KEYS)
 
     # Only a tenant's proceeding is subject to the open-proceeding warning.
-    second = await open_proceeding(db, lawyer, contact_id=first.contact.id, claim_amount=300)
+    second = await open_proceeding(db, lawyer, contact_id=first.contact.id, amount=300)
     assert second.proceeding.id != first.proceeding.id
     assert await actions(db, second.proceeding.id) == ["proceeding_created"]
 
@@ -244,12 +244,12 @@ async def test_landlord_rules_and_immutable_parties(team):
     db, lawyer = team["db"], team["lawyer"]
     landlord = (await open_proceeding(db, lawyer, party_role="landlord")).contact
     svc = LegalProceedingService(db, lawyer)
-    new = {"contact": {"details": {"kind": "person", "name": "דייר ב", "phone": "050-2222222", "email": "p@example.com", "address": "רחוב 1"}}}
-    base = {"party_role": "tenant", "apartment_number": "4", "title": "t"}
+    new = {"contact": {"details": {"kind": "person", "name": "דייר ב", "phone": "050-2222222", "email": "p@example.com", "address": "רחוב 1", "apartment_number": "4"}}}
+    base = {"party_role": "tenant", "title": "t", "base_items": [{"subject": "בסיס", "amount": "10"}]}
     for values, kwargs, code in (
         (base, {}, "landlord_required"),
         ({**base, "party_role": "supplier"}, {"landlord": {"contact_id": landlord.id}}, "landlord_not_allowed"),
-        ({**base, "apartment_number": "  "}, {"landlord": {"contact_id": landlord.id}}, "apartment_number_required"),
+        ({**base, "base_items": []}, {"landlord": {"contact_id": landlord.id}}, "base_items_required"),
         (base, {"landlord": {"contact_id": 9999}}, "contact_not_found"),
     ):
         with pytest.raises(HTTPException) as exc:
@@ -268,8 +268,8 @@ async def test_duplicate_phone_blocks_a_new_contact_until_confirmed(team):
     db, lawyer = team["db"], team["lawyer"]
     await open_proceeding(db, lawyer)
     svc = LegalProceedingService(db, lawyer)
-    values = {"party_role": "landlord", "apartment_number": "5", "title": "t"}
-    details = {"kind": "person", "name": "Someone", "phone": "+972 50-111-1111", "email": "p@example.com", "address": "רחוב 1"}
+    values = {"party_role": "landlord", "title": "t", "base_items": [{"subject": "בסיס", "amount": "10"}]}
+    details = {"kind": "person", "name": "Someone", "phone": "+972 50-111-1111", "email": "p@example.com", "address": "רחוב 1", "apartment_number": "4"}
     with pytest.raises(HTTPException) as exc:
         await svc.create(values, contact={"details": details})
     assert exc.value.status_code == 409 and exc.value.detail["code"] == "duplicate_phone"
@@ -322,9 +322,9 @@ async def test_phones_are_stored_normalized_and_every_combination_matches(team):
 
 
 @pytest.mark.parametrize("values, code", [
-    ({"claim_amount": 0}, "invalid_amount"),
-    ({"claim_amount": "-5"}, "invalid_amount"),
-    ({"claim_amount": "1.234"}, "invalid_amount"),
+    ({"amount": 0}, "invalid_amount"),
+    ({"amount": "-5"}, "invalid_amount"),
+    ({"amount": "1.234"}, "invalid_amount"),
     ({"party_role": "judge"}, "invalid_party_role"),
     ({"title": "  "}, "title_required"),
     ({"project_id": 9999}, "project_not_found"),
@@ -339,7 +339,7 @@ async def test_update_close_reopen(team):
     db, lawyer = team["db"], team["lawyer"]
     pid = (await open_proceeding(db, lawyer)).proceeding.id
     svc = LegalProceedingService(db, lawyer)
-    await svc.update(pid, {"claim_amount": "99.90", "apartment_number": "דירה 7"})
+    await svc.update(pid, {"title": "נושא חדש", "claim_details": "פירוט"})
     with pytest.raises(HTTPException) as exc:
         await svc.update(pid, {"contact_id": 5})
     assert code_of(exc) == "contact_immutable"
@@ -361,7 +361,7 @@ async def test_update_close_reopen(team):
     assert await actions(db, pid) == ["proceeding_created", "proceeding_updated", "proceeding_closed",
                                       "proceeding_reopened"]
     upd = await last_details(db, pid, "proceeding_updated")
-    assert upd["after"] == {"apartment_number": "דירה 7", "claim_amount": "99.90"}
+    assert upd["after"] == {"title": "נושא חדש", "claim_details": "פירוט"}
     reo = await last_details(db, pid, "proceeding_reopened")
     assert reo["previous_close"]["close_reason"] == "שולם במלואו"
     logs, total = await svc.history(pid)
@@ -660,9 +660,9 @@ async def test_project_summary_and_filters(team, test_db):
     test_db.add_all([child, other])
     await test_db.commit()
 
-    p1 = await open_proceeding(db, lawyer, project_id=child.id, claim_amount=100)
-    await open_proceeding(db, lawyer, project_id=child.id, claim_amount="50.50")
-    closed = await open_proceeding(db, lawyer, project_id=parent.id, claim_amount=900)
+    p1 = await open_proceeding(db, lawyer, project_id=child.id, amount=100)
+    await open_proceeding(db, lawyer, project_id=child.id, amount="50.50")
+    closed = await open_proceeding(db, lawyer, project_id=parent.id, amount=900)
     await LegalProceedingService(db, lawyer).close(closed.proceeding.id, "הסתיים")
     await open_proceeding(db, admin, project_id=other.id)  # not visible to the lawyer
     await db.commit()

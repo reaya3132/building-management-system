@@ -30,6 +30,9 @@ CONTACTS_MIGRATION = MIGRATIONS / "add_contacts.sql"
 MIGRATION = MIGRATIONS / "add_legal_proceedings.sql"
 INDEX_MIGRATION = MIGRATIONS / "add_legal_proceedings_indexes_concurrently.sql"
 ROLLBACK = MIGRATIONS / "rollback_legal_proceedings.sql"
+COLLECTION_MIGRATION = MIGRATIONS / "add_collection_tasks.sql"
+UPGRADE = MIGRATIONS / "upgrade_ledger_items_and_legal_fields.sql"
+UPGRADE_ROLLBACK = MIGRATIONS / "rollback_ledger_items_and_legal_fields.sql"
 MARKER = "owner:add_legal_proceedings"
 LEGAL_TABLES = ("contacts", "legal_proceedings", "legal_proceeding_stages",
                 "legal_proceeding_entries", "legal_proceeding_assignees")
@@ -92,15 +95,35 @@ async def drop_db(name: str) -> None:
         await conn.close()
 
 
-async def create_all(db: str, *, include_legal: bool) -> None:
+# The ledger table before the upgrade (add_collection_tasks.sql).
+_COLLECTION_LEDGER_DDL = """
+CREATE TABLE collection_ledger_items (
+    id SERIAL NOT NULL, task_id INTEGER NOT NULL, subject VARCHAR(255) NOT NULL, amount NUMERIC(12, 2) NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0, created_by_user_id INTEGER NOT NULL, updated_by_user_id INTEGER NULL,
+    created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, archived_at TIMESTAMP NULL, archived_by_user_id INTEGER NULL,
+    CONSTRAINT collection_ledger_items_pkey PRIMARY KEY (id),
+    CONSTRAINT collection_ledger_items_task_id_fkey FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE RESTRICT,
+    CONSTRAINT collection_ledger_items_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES users (id) ON DELETE RESTRICT,
+    CONSTRAINT collection_ledger_items_updated_by_user_id_fkey FOREIGN KEY (updated_by_user_id) REFERENCES users (id) ON DELETE RESTRICT,
+    CONSTRAINT collection_ledger_items_archived_by_user_id_fkey FOREIGN KEY (archived_by_user_id) REFERENCES users (id) ON DELETE RESTRICT,
+    CONSTRAINT ck_cli_amount_positive CHECK (amount > 0)
+);
+CREATE INDEX ix_cli_task_id ON collection_ledger_items (task_id);
+CREATE INDEX ix_cli_task_id_active ON collection_ledger_items (task_id) WHERE archived_at IS NULL;
+"""
+
+
+async def create_all(db: str, *, include_legal: bool, ledger: bool = False) -> None:
     """Schema from the models. ``include_legal=False`` reproduces today's production
-    schema: no module tables and no documents.context_key (the only differences
-    between this branch and main)."""
+    schema: no module tables and no documents.context_key. ``ledger_items`` is built
+    only with ``ledger=True`` (a database created entirely by the new code); otherwise
+    the ledger comes from the production table and the upgrade file."""
     import backend.models  # noqa: F401  (registers every model)
     import backend.models.cems_models  # noqa: F401
     from backend.db.base import Base
 
-    tables = [t for t in Base.metadata.sorted_tables if include_legal or t.name not in LEGAL_TABLES]
+    tables = [t for t in Base.metadata.sorted_tables
+              if (include_legal or t.name not in LEGAL_TABLES) and (ledger or t.name != "ledger_items")]
     engine = create_async_engine(sqlalchemy_url(db), poolclass=NullPool)
     try:
         async with engine.begin() as conn:
@@ -116,6 +139,7 @@ async def production_like(db: str, *, seed_documents: bool = True) -> str:
     contacts applied by its own migration."""
     await create_db(db)
     await create_all(db, include_legal=False)
+    await execute(db, _COLLECTION_LEDGER_DDL)
     run = await run_sql_file(db, CONTACTS_MIGRATION)
     assert run.ok, run.error
     if seed_documents:
@@ -205,6 +229,22 @@ async def migrate(db: str) -> None:
     for path in (MIGRATION, INDEX_MIGRATION):
         run = await run_sql_file(db, path)
         assert run.ok, f"{path.name}: {run.error}"
+
+
+async def upgrade(db: str) -> None:
+    run = await run_sql_file(db, UPGRADE)
+    assert run.ok, f"{UPGRADE.name}: {run.error}"
+
+
+async def to_previous_legal_fields(db: str) -> None:
+    """Turn the current legal schema into the one before the upgrade file."""
+    await execute(db, """
+        ALTER TABLE contacts DROP COLUMN apartment_number;
+        ALTER TABLE legal_proceedings
+            ADD COLUMN apartment_number VARCHAR(32) NOT NULL,
+            ADD COLUMN claim_amount NUMERIC(14, 2) NULL,
+            ADD CONSTRAINT ck_lp_apartment_number CHECK (trim(apartment_number) <> ''),
+            ADD CONSTRAINT ck_lp_amount CHECK (claim_amount IS NULL OR claim_amount > 0);""")
 
 
 # ── inspection ────────────────────────────────────────────────────────────────

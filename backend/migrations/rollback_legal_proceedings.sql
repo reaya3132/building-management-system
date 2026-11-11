@@ -23,6 +23,9 @@
 --     documents.context_key, ...) depends on anything it would drop.
 -- All checks run before the first drop, so a stop leaves the schema exactly as it was.
 --
+-- After upgrade_ledger_items_and_legal_fields.sql, run
+-- rollback_ledger_items_and_legal_fields.sql first: ledger_items references legal_proceedings.
+--
 -- Deploy order: roll the CODE back first (the old code does not read context_key),
 -- then run:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/rollback_legal_proceedings.sql

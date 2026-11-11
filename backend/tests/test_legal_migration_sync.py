@@ -14,6 +14,7 @@ from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
 
 from backend.configurations.legal.stages import STAGE1_KEY
 from backend.models.contact import Contact
+from backend.models.ledger_item import LedgerItem
 from backend.models.legal_proceeding import (
     LegalProceeding,
     LegalProceedingAssignee,
@@ -24,6 +25,9 @@ from backend.models.legal_proceeding import (
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations"
 SQL = (MIGRATIONS / "add_legal_proceedings.sql").read_text(encoding="utf-8")
 CONTACTS_SQL = (MIGRATIONS / "add_contacts.sql").read_text(encoding="utf-8")
+UPGRADE_SQL = (MIGRATIONS / "upgrade_ledger_items_and_legal_fields.sql").read_text(encoding="utf-8")
+ROLLBACK_SQL = (MIGRATIONS / "rollback_ledger_items_and_legal_fields.sql").read_text(encoding="utf-8")
+COLLECTION_SQL = (MIGRATIONS / "add_collection_tasks.sql").read_text(encoding="utf-8")
 MODELS = (Contact, LegalProceeding, LegalProceedingStage, LegalProceedingEntry, LegalProceedingAssignee)
 
 
@@ -132,3 +136,21 @@ def test_partial_landlord_index_matches():
     index = next(ix for ix in LegalProceeding.__table__.indexes if ix.name == "ix_lp_landlord_status")
     where = _norm(str(index.dialect_options["postgresql"]["where"]))
     assert f"ix_lp_landlord_status on legal_proceedings (landlord_contact_id, status) where {where};" in _norm(SQL)
+
+
+def test_ledger_upgrade_matches_the_model():
+    checks = {c.name: _norm(str(c.sqltext)) for c in LedgerItem.__table__.constraints if isinstance(c, CheckConstraint)}
+    upgrade = _norm(UPGRADE_SQL)
+    for name, expr in checks.items():
+        if name != "ck_cli_amount_positive":  # exists since add_collection_tasks.sql
+            assert f"add constraint {name} check ( {expr})" in upgrade, name
+            assert f"drop constraint {name}" in _norm(ROLLBACK_SQL), name
+    assert "ck_cli_amount_positive check (amount > 0)" in _norm(COLLECTION_SQL)
+    for index in LedgerItem.__table__.indexes:
+        assert index.name in UPGRADE_SQL or index.name in COLLECTION_SQL, index.name
+    assert "uq_li" not in UPGRADE_SQL  # any number of base amounts per proceeding
+
+
+def test_collection_migration_cannot_recreate_the_renamed_table():
+    guard = COLLECTION_SQL.index("to_regclass('public.ledger_items') IS NULL")
+    assert guard < COLLECTION_SQL.index("CREATE TABLE IF NOT EXISTS collection_ledger_items (") < COLLECTION_SQL.index("END $ledger$")

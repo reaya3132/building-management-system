@@ -35,7 +35,7 @@ async def ctx(test_db, test_engine):
 
 def card(phone, phone_2=None, name="c"):
     return {"kind": "person", "name": name, "phone": phone, "phone_2": phone_2,
-            "email": "c@example.com", "address": "רחוב"}
+            "email": "c@example.com", "address": "רחוב", "apartment_number": "4"}
 
 
 async def create(maker, user, values, **kw):
@@ -126,7 +126,7 @@ async def test_new_contact_and_landlord_in_opposite_order_do_not_deadlock(ctx):
     user, _, maker = ctx
 
     async def open_case(contact_phone, landlord_phone):
-        values = {"party_role": "tenant", "apartment_number": "4", "title": "t"}
+        values = {"party_role": "tenant", "title": "t", "base_items": [{"subject": "בסיס", "amount": "10"}]}
         async with maker() as db:
             try:
                 result = await LegalProceedingService(db, user).create(
@@ -263,7 +263,7 @@ async def test_update_and_opening_a_proceeding_do_not_deadlock(ctx):
     user, _, maker = ctx
 
     async def open_with(existing_id, new_phone):
-        values = {"party_role": "tenant", "apartment_number": "4", "title": "t"}
+        values = {"party_role": "tenant", "title": "t", "base_items": [{"subject": "בסיס", "amount": "10"}]}
         async with maker() as db:
             try:
                 result = await LegalProceedingService(db, user).create(

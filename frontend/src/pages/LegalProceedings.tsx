@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ChevronLeft, ChevronRight, Eye, Lock, LockOpen, Plus, Scale, Search } from 'lucide-react'
 import { usePermission } from '../hooks/usePermission'
 import { cn } from '../lib/utils'
@@ -14,7 +15,6 @@ import SearchableSelect from '../components/task-management/SearchableSelect'
 import type { ComboOption } from '../components/task-management/SearchableMultiSelect'
 import CreateLegalProceedingModal from '../components/legal/CreateLegalProceedingModal'
 import LegalModal, { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../components/legal/LegalModal'
-import LegalProceedingDetailsModal from '../components/legal/LegalProceedingDetailsModal'
 import { PARTY_ROLE_LABELS, STATUS_BADGE, STATUS_LABELS, formatDate, legalErrorMessage } from '../components/legal/legalUtils'
 
 const PAGE_SIZE = 25
@@ -44,7 +44,8 @@ export default function LegalProceedings() {
   const [landlordOptions, setLandlordOptions] = useState<ComboOption[]>([])
 
   const [creating, setCreating] = useState(false)
-  const [viewingId, setViewingId] = useState<number | null>(null)
+  const navigate = useNavigate()
+  const openProceeding = (id: number) => navigate(`/legal-proceedings/${id}`)
   const [statusAction, setStatusAction] = useState<StatusAction | null>(null)
 
   const reload = useCallback(() => setReloadKey((k) => k + 1), [])
@@ -165,7 +166,7 @@ export default function LegalProceedings() {
             {items.map((item) => (
               <tr key={item.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/40">
                 <td className={TD}>
-                  <button type="button" onClick={() => setViewingId(item.id)} className="text-right font-medium text-gray-900 dark:text-white hover:text-primary">{item.title}</button>
+                  <button type="button" onClick={() => openProceeding(item.id)} className="text-right font-medium text-gray-900 dark:text-white hover:text-primary">{item.title}</button>
                   <div className="text-xs text-gray-500 dark:text-gray-400">#{item.id} · נפתח {formatDate(item.opened_at)}</div>
                 </td>
                 <td className={TD}>
@@ -173,7 +174,7 @@ export default function LegalProceedings() {
                   <div className="text-xs text-gray-500 dark:text-gray-400">{PARTY_ROLE_LABELS[item.party_role]}</div>
                 </td>
                 <td className={cn(TD, 'text-gray-700 dark:text-gray-300')}>{item.linked_landlord?.name ?? '—'}</td>
-                <td className={cn(TD, 'text-gray-700 dark:text-gray-300 whitespace-nowrap')}>{item.apartment_number}</td>
+                <td className={cn(TD, 'text-gray-700 dark:text-gray-300 whitespace-nowrap')}>{item.apartment_number ?? '—'}</td>
                 <td className={cn(TD, 'text-gray-700 dark:text-gray-300')}>{item.project?.name ?? '—'}</td>
                 <td className={cn(TD, 'min-w-[7rem]')}>
                   <div className="text-xs text-gray-600 dark:text-gray-300 mb-1">{item.progress.resolved} מתוך {item.progress.total}</div>
@@ -181,12 +182,12 @@ export default function LegalProceedings() {
                     <div className="h-full bg-primary" style={{ width: `${item.progress.percent}%` }} />
                   </div>
                 </td>
-                <td className={cn(TD, 'whitespace-nowrap text-gray-700 dark:text-gray-300')}>{item.claim_amount ? formatILS(item.claim_amount) : '—'}</td>
+                <td className={cn(TD, 'whitespace-nowrap text-gray-700 dark:text-gray-300')}>{formatILS(item.total_amount)}</td>
                 <td className={TD}>
                   <span className={cn('inline-flex rounded-md border px-2 py-0.5 text-xs font-medium whitespace-nowrap', STATUS_BADGE[item.status])}>{STATUS_LABELS[item.status]}</span>
                 </td>
                 <td className={cn(TD, 'whitespace-nowrap text-left')}>
-                  <button type="button" aria-label={`צפייה בהליך ${item.title}`} title="צפייה" onClick={() => setViewingId(item.id)}
+                  <button type="button" aria-label={`צפייה בהליך ${item.title}`} title="צפייה" onClick={() => openProceeding(item.id)}
                     className="p-1.5 rounded-md text-gray-500 hover:text-primary hover:bg-gray-100 dark:hover:bg-gray-700"><Eye className="w-4 h-4" /></button>
                   {canUpdate && (
                     <button type="button" aria-label={`${item.status === 'open' ? 'סגירת' : 'פתיחה מחדש של'} הליך ${item.title}`}
@@ -214,7 +215,6 @@ export default function LegalProceedings() {
       )}
 
       <CreateLegalProceedingModal isOpen={creating} onClose={() => setCreating(false)} onCreated={() => { setCreating(false); reload() }} />
-      <LegalProceedingDetailsModal proceedingId={viewingId} onClose={() => setViewingId(null)} />
       <StatusActionModal action={statusAction} onClose={() => setStatusAction(null)} onDone={() => { setStatusAction(null); reload() }} />
     </div>
   )

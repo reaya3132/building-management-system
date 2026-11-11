@@ -30,7 +30,8 @@ pytestmark = pytest.mark.asyncio
 
 API = "/api/v1/legal"
 WHEN = "2026-10-01T09:30:00Z"
-NEW_CONTACT = {"kind": "person", "name": "ישראל ישראלי", "phone": "050-1234567", "email": "p@example.com", "address": "רחוב 1"}
+NEW_CONTACT = {"kind": "person", "name": "ישראל ישראלי", "phone": "050-1234567", "email": "p@example.com", "address": "רחוב 1", "apartment_number": "4"}
+BASE_ITEMS = [{"subject": "סכום תביעה", "amount": "1250.50"}]
 
 
 class FakeStorage:
@@ -82,7 +83,7 @@ async def colleague(test_db) -> User:
 
 async def open_proceeding(client, user, **extra) -> dict:
     contact_id, landlord_id = extra.pop("contact_id", None), extra.pop("landlord_contact_id", None)
-    body = {"party_role": "landlord", "apartment_number": "4", "title": "חוב ועד בית", "claim_amount": "1250.50",
+    body = {"party_role": "landlord", "title": "חוב ועד בית", "base_items": BASE_ITEMS,
             "contact": {"contact_id": contact_id} if contact_id else {"details": dict(NEW_CONTACT)},
             "confirm_duplicate_contact": True, **extra}
     if landlord_id:
@@ -107,7 +108,7 @@ async def test_stage_catalogue(test_client, lawyer):
 async def test_open_get_list_update_close_reopen(test_client, lawyer):
     created = await open_proceeding(test_client, lawyer)
     p = created["proceeding"]
-    assert p["status"] == "open" and p["claim_amount"] == "1250.50" and p["contact"]["name"] == "ישראל ישראלי"
+    assert p["status"] == "open" and p["total_amount"] == "1250.50" and p["contact"]["name"] == "ישראל ישראלי"
     assert len(p["stages"]) == 5 and p["progress"] == {"resolved": 0, "total": 5, "percent": 0,
                                                        "next_stage_key": p["stages"][0]["key"]}
     assert p["permissions"] == {"can_update": True, "can_assign": True, "can_delete_others": False}
@@ -119,8 +120,10 @@ async def test_open_get_list_update_close_reopen(test_client, lawyer):
                                   headers=h)).json()
     assert page["total"] == 1 and page["items"][0]["contact"]["name"] == "ישראל ישראלי"
 
-    r = await test_client.patch(f"{API}/proceedings/{pid}", json={"apartment_number": "7"}, headers=h)
-    assert r.status_code == 200 and r.json()["apartment_number"] == "7"
+    r = await test_client.patch(f"{API}/proceedings/{pid}", json={"title": "נושא חדש"}, headers=h)
+    assert r.status_code == 200 and r.json()["title"] == "נושא חדש"
+    for removed in ({"apartment_number": "7"}, {"claim_amount": "5"}):
+        assert (await test_client.patch(f"{API}/proceedings/{pid}", json=removed, headers=h)).status_code == 422
     for field, value in (("contact_id", 9), ("party_role", "other"), ("landlord_contact_id", 9)):
         assert (await test_client.patch(f"{API}/proceedings/{pid}", json={field: value}, headers=h)).status_code == 422
     assert (await test_client.patch(f"{API}/proceedings/{pid}", json={}, headers=h)).status_code == 422
@@ -140,7 +143,7 @@ async def test_open_get_list_update_close_reopen(test_client, lawyer):
 
 async def test_business_errors_carry_a_code(test_client, lawyer):
     r = await test_client.post(f"{API}/proceedings", headers=auth(lawyer),
-                               json={"party_role": "landlord", "apartment_number": "4", "title": "t"})
+                               json={"party_role": "landlord", "base_items": BASE_ITEMS, "title": "t"})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "contact_required"
 
 
@@ -268,7 +271,7 @@ async def test_project_summary(test_client, lawyer):
 
 async def _landlord(client, user, name="בעל דירה") -> int:
     r = await client.post(f"{API}/contacts", json={"kind": "person", "name": name, "phone": f"050{abs(hash(name)) % 10**7:07d}",
-                                                         "email": "l@example.com", "address": "רחוב 2"},
+                                                         "email": "l@example.com", "address": "רחוב 2", "apartment_number": "2"},
                           headers=auth(user))
     assert r.status_code == 201, r.text
     return r.json()["contact"]["id"]
@@ -326,7 +329,7 @@ async def test_each_write_commits_exactly_once(test_client, test_db, lawyer, col
     P = f"{API}/proceedings"
     calls = [
         lambda: test_client.post(f"{API}/contacts", json={"kind": "person", "name": "n", "phone": "03-1234569"}, headers=h),
-        lambda: test_client.post(P, headers=h, json={"party_role": "tenant", "apartment_number": "1", "title": "t",
+        lambda: test_client.post(P, headers=h, json={"party_role": "tenant", "base_items": BASE_ITEMS, "title": "t",
                                  "landlord": {"contact_id": landlord_id}, "contact": {"details": {**NEW_CONTACT, "name": "m", "phone": "03-1234568"}}}),
         lambda: test_client.patch(f"{P}/{pid}", json={"title": "x"}, headers=h),
         lambda: test_client.post(f"{P}/{pid}/assignees", json={"user_id": colleague.id}, headers=h),
@@ -356,7 +359,7 @@ async def test_failure_midway_rolls_back_the_new_contact_too(test_client, test_e
         raise RuntimeError("audit down")
 
     monkeypatch.setattr(LegalProceedingService, "_log", boom)
-    body = {"party_role": "other", "apartment_number": "4", "title": "t",
+    body = {"party_role": "other", "base_items": BASE_ITEMS, "title": "t",
             "contact": {"details": {**NEW_CONTACT, "name": "לא יישמר", "phone": "050-7777777"}}}
     r = await test_client.post(f"{API}/proceedings", json=body, headers=auth(lawyer))
     assert r.status_code == 500
@@ -390,7 +393,7 @@ async def _db_state(maker) -> dict:
 
 COMMIT_FAILURES = {
     "new_contact_and_proceeding": lambda c, h, pid, other: c.post(f"{API}/proceedings", headers=h, json={
-        "party_role": "other", "apartment_number": "4", "title": "t",
+        "party_role": "other", "base_items": BASE_ITEMS, "title": "t",
         "contact": {"details": {**NEW_CONTACT, "name": "לא יישמר", "phone": "050-7787787"}}}),
     "contact": lambda c, h, pid, other: c.post(f"{API}/contacts", headers=h,
                                                json={"kind": "person", "name": "n", "phone": "03-1234567"}),
@@ -445,7 +448,7 @@ async def test_contact_email_may_be_omitted_and_is_validated_everywhere(test_cli
     assert r.status_code == 200 and r.json()["email"] == "ok@example.com"
     r = await test_client.patch(f"{API}/contacts/{cid}", json={"email": None}, headers=ah)
     assert r.status_code == 200 and r.json()["email"] is None
-    body = {"party_role": "other", "apartment_number": "4", "title": "t",
+    body = {"party_role": "other", "base_items": BASE_ITEMS, "title": "t",
             "contact": {"details": {**NEW_CONTACT, "email": "bad"}}}
     assert (await test_client.post(f"{API}/proceedings", json=body, headers=h)).status_code == 422
 
@@ -492,13 +495,14 @@ async def test_duplicate_check_is_general_and_needs_write(test_client, test_db, 
 # ── selecting an existing contact ────────────────────────────────────────────
 
 async def _card(client, user, phone, **extra) -> int:
-    r = await client.post(f"{API}/contacts", json={"kind": "person", "name": "כרטיס", "phone": phone, **extra}, headers=auth(user))
+    r = await client.post(f"{API}/contacts", json={"kind": "person", "name": "כרטיס", "phone": phone,
+                                                     **({"apartment_number": "4"} if extra.get("address") else {}), **extra}, headers=auth(user))
     assert r.status_code == 201, r.text
     return r.json()["contact"]["id"]
 
 
 def _open_body(contact_id):
-    return {"party_role": "other", "apartment_number": "4", "title": "t", "contact": {"contact_id": contact_id}}
+    return {"party_role": "other", "base_items": BASE_ITEMS, "title": "t", "contact": {"contact_id": contact_id}}
 
 
 def _real_get_db(client, engine, monkeypatch, session_class=AsyncSession):
@@ -542,7 +546,7 @@ async def test_incomplete_card_needs_an_explicit_edit_first(test_client, test_en
     before = await _contact_row(maker, cid)
     r = await test_client.post(f"{API}/proceedings", headers=auth(lawyer), json=_open_body(cid))
     assert r.status_code == 422 and r.json()["detail"]["code"] == "contact_details_incomplete"
-    assert r.json()["detail"]["missing"] == ["email"] and "מנהל" in r.json()["detail"]["message"]
+    assert r.json()["detail"]["missing"] == ["email"] and "להשלים" in r.json()["detail"]["message"]
     assert await _contact_row(maker, cid) == before
     r = await test_client.patch(f"{API}/contacts/{cid}", json={"email": "new@example.com"}, headers=auth(admin_user))
     assert r.status_code == 200 and r.json()["email"] == "new@example.com"
@@ -560,7 +564,7 @@ async def test_new_party_needs_a_valid_email_in_every_role(test_client, lawyer, 
         details.pop("email")
     else:
         details["email"] = email
-    body = {"party_role": party_role, "apartment_number": "4", "title": "t", "contact": {"details": details}}
+    body = {"party_role": party_role, "base_items": BASE_ITEMS, "title": "t", "contact": {"details": details}}
     if party_role == "tenant":
         body["landlord"] = {"contact_id": landlord}
     assert (await test_client.post(f"{API}/proceedings", headers=auth(lawyer), json=body)).status_code == 422
@@ -585,7 +589,7 @@ async def test_email_stays_optional_on_the_contact_itself(test_client, test_engi
 
 
 async def test_contact_search_and_proceeding_expose_no_internal_fields(test_client, lawyer):
-    expected = {"id", "name", "phone", "phone_2", "email", "address"}
+    expected = {"id", "name", "phone", "phone_2", "email", "address", "apartment_number"}
     cid = await _card(test_client, lawyer, "050-6000016", email="a@example.com", address="כתובת", notes="מידע פנימי")
     h = auth(lawyer)
     found = (await test_client.get(f"{API}/contacts", params={"search": "כרטיס"}, headers=h)).json()
@@ -599,21 +603,21 @@ async def test_contact_search_and_proceeding_expose_no_internal_fields(test_clie
 @pytest.mark.parametrize("party_role", ["tenant", "landlord", "supplier", "other"])
 async def test_required_details_for_every_role(test_client, lawyer, party_role):
     h, landlord = auth(lawyer), await _landlord(test_client, lawyer)
-    body = {"party_role": party_role, "apartment_number": "4", "title": "t",
+    body = {"party_role": party_role, "base_items": BASE_ITEMS, "title": "t",
             "contact": {"details": {"kind": "person", "name": "n", "phone": "050-6000021", "email": "a@example.com"}}}
     if party_role == "tenant":
         body["landlord"] = {"contact_id": landlord}
     r = await test_client.post(f"{API}/proceedings", headers=h, json=body)
     assert r.status_code == 422 and r.json()["detail"]["code"] == "contact_details_incomplete"
-    assert r.json()["detail"]["party"] == "contact" and r.json()["detail"]["missing"] == ["address"]
+    assert r.json()["detail"]["party"] == "contact" and r.json()["detail"]["missing"] == ["address", "apartment_number"]
 
 
-async def test_incomplete_landlord_is_rejected(test_client, lawyer):
+async def test_linked_landlord_needs_no_email_or_address(test_client, lawyer):
     bare = await _card(test_client, lawyer, "050-6000031")
-    body = {"party_role": "tenant", "apartment_number": "4", "title": "t", "contact": {"details": dict(NEW_CONTACT)},
+    body = {"party_role": "tenant", "base_items": BASE_ITEMS, "title": "t", "contact": {"details": dict(NEW_CONTACT)},
             "landlord": {"contact_id": bare}}
     r = await test_client.post(f"{API}/proceedings", headers=auth(lawyer), json=body)
-    assert r.status_code == 422 and r.json()["detail"]["party"] == "landlord"
+    assert r.status_code == 201, r.text
 
 
 async def test_selecting_requires_write_and_an_active_contact(test_client, test_db, lawyer):
@@ -635,7 +639,7 @@ async def test_selected_contacts_are_locked_together_in_id_order(test_client, te
     event.listen(test_engine.sync_engine, "before_cursor_execute", listener)
     try:
         r = await test_client.post(f"{API}/proceedings", headers=auth(lawyer), json={
-            "party_role": "tenant", "apartment_number": "4", "title": "t",
+            "party_role": "tenant", "base_items": BASE_ITEMS, "title": "t",
             "contact": {"contact_id": second}, "landlord": {"contact_id": first}})
     finally:
         event.remove(test_engine.sync_engine, "before_cursor_execute", listener)
@@ -649,7 +653,7 @@ async def test_selected_contacts_are_locked_together_in_id_order(test_client, te
 async def test_same_contact_may_be_tenant_and_landlord(test_client, lawyer):
     cid = await _card(test_client, lawyer, "050-6000061", email="a@example.com", address="א")
     r = await test_client.post(f"{API}/proceedings", headers=auth(lawyer), json={
-        "party_role": "tenant", "apartment_number": "4", "title": "t",
+        "party_role": "tenant", "base_items": BASE_ITEMS, "title": "t",
         "contact": {"contact_id": cid}, "landlord": {"contact_id": cid}})
     assert r.status_code == 201 and r.json()["proceeding"]["linked_landlord"]["id"] == cid
 
@@ -711,11 +715,11 @@ async def test_card_of_an_open_proceeding_keeps_required_fields(test_client, adm
     assert (await test_client.patch(f"{API}/contacts/{cid}", json={"address": None}, headers=h)).status_code == 200
 
 
-async def test_linked_landlord_card_keeps_required_fields(test_client, admin_user, lawyer):
+async def test_linked_landlord_card_has_no_protected_fields(test_client, admin_user, lawyer):
     landlord = await _landlord(test_client, lawyer)
     await open_proceeding(test_client, lawyer, party_role="tenant", landlord_contact_id=landlord)
     r = await test_client.patch(f"{API}/contacts/{landlord}", json={"email": None}, headers=auth(admin_user))
-    assert r.status_code == 422 and r.json()["detail"]["fields"] == ["email"]
+    assert r.status_code == 200 and r.json()["email"] is None
 
 
 async def _super_admin(db) -> User:
@@ -751,7 +755,7 @@ async def test_no_other_route_edits_an_existing_contact(test_client, test_engine
     h = auth(lawyer)
     attempts = [
         test_client.post(f"{API}/contacts", json={"id": cid, "kind": "person", "name": "x", "phone": "050-7200002"}, headers=h),
-        test_client.post(f"{API}/proceedings", headers=h, json={"party_role": "other", "apartment_number": "4", "title": "t",
+        test_client.post(f"{API}/proceedings", headers=h, json={"party_role": "other", "base_items": BASE_ITEMS, "title": "t",
                          "contact": {"contact_id": cid, "details": {"email": "b@example.com"}}}),
     ]
     for attempt in attempts:
@@ -788,7 +792,7 @@ async def test_same_name_and_email_are_not_duplicates(test_client, lawyer):
 async def test_duplicate_while_opening_a_proceeding_needs_confirmation(test_client, test_engine, lawyer, monkeypatch):
     await _card(test_client, lawyer, "050-7100001")
     maker = _real_get_db(test_client, test_engine, monkeypatch)
-    body = {"party_role": "other", "apartment_number": "4", "title": "t",
+    body = {"party_role": "other", "base_items": BASE_ITEMS, "title": "t",
             "contact": {"details": {**NEW_CONTACT, "phone": "+972 50 710 0001"}}}
     r = await test_client.post(f"{API}/proceedings", headers=auth(lawyer), json=body)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "duplicate_phone"
@@ -1080,7 +1084,7 @@ async def test_open_proceeding_warning_is_general_and_tenant_only(test_client, t
     first = await open_proceeding(test_client, lawyer, party_role="tenant", contact_id=tenant, landlord_contact_id=landlord, title="סודי")
     url = f"{API}/contacts/{tenant}/open-proceedings"
     assert (await test_client.get(url, headers=auth(colleague))).json() == {"has_open": True}
-    body = {"party_role": "tenant", "apartment_number": "9", "title": "t", "contact": {"contact_id": tenant}, "landlord": {"contact_id": landlord}}
+    body = {"party_role": "tenant", "base_items": BASE_ITEMS, "title": "t", "contact": {"contact_id": tenant}, "landlord": {"contact_id": landlord}}
     r = await test_client.post(f"{API}/proceedings", headers=auth(colleague), json=body)
     assert r.status_code == 409
     assert r.json()["detail"] == {"code": "tenant_has_open_proceeding", "message": "לאיש קשר זה כבר קיים הליך משפטי פתוח. האם להמשיך?"}
@@ -1094,7 +1098,7 @@ async def test_open_proceeding_warning_is_general_and_tenant_only(test_client, t
     assert parsed["had_open_proceeding"] is True and "open_proceedings_of_contact" not in parsed
     # the same person as another role is not warned, and a landlord is not "a tenant with an open proceeding"
     assert (await test_client.get(f"{API}/contacts/{landlord}/open-proceedings", headers=auth(lawyer))).json() == {"has_open": False}
-    other = {"party_role": "other", "apartment_number": "9", "title": "t", "contact": {"contact_id": tenant}}
+    other = {"party_role": "other", "base_items": BASE_ITEMS, "title": "t", "contact": {"contact_id": tenant}}
     r = await test_client.post(f"{API}/proceedings", headers=auth(lawyer), json=other)
     assert r.status_code == 201
 

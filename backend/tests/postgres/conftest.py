@@ -43,6 +43,7 @@ def migrated_template() -> str:
     async def build():
         await pg_utils.production_like(_TEMPLATE, seed_documents=False)
         await pg_utils.migrate(_TEMPLATE)
+        await pg_utils.upgrade(_TEMPLATE)
     asyncio.run(build())
     yield _TEMPLATE
     asyncio.run(pg_utils.drop_db(_TEMPLATE))

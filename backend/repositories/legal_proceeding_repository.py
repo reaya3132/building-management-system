@@ -19,6 +19,7 @@ from sqlalchemy.orm import aliased
 from backend.models.audit_log import AuditLog
 from backend.models.contact import Contact
 from backend.models.document import Document
+from backend.models.ledger_item import LedgerItem
 from backend.models.legal_proceeding import (
     LEGAL_ENTRY_DOCUMENT_ENTITY,
     LEGAL_PROCEEDING_AUDIT_ENTITY,
@@ -47,6 +48,20 @@ def visible_to_user_clause(user_id: int):
     )
 
 
+def ledger_total_expr():
+    """The proceeding's total: its active ledger items, never a stored value."""
+    return (
+        select(func.coalesce(func.sum(LedgerItem.amount), 0))
+        .where(LedgerItem.legal_proceeding_id == LegalProceeding.id, LedgerItem.archived_at.is_(None))
+        .correlate(LegalProceeding)
+        .scalar_subquery()
+    )
+
+
+def _money(value) -> Decimal:
+    return Decimal(value if value is not None else 0).quantize(Decimal("0.01"))
+
+
 @dataclass
 class ProceedingFilters:
     status: str | None = None             # 'open' | 'closed' | None (all)
@@ -65,6 +80,8 @@ class ProceedingRow:
     project_name: str | None
     created_by_name: str | None
     linked_landlord_name: str | None = None   # only in a tenant's proceeding
+    apartment_number: str | None = None       # of the primary contact
+    total_amount: Decimal = Decimal("0.00")
 
 
 @dataclass
@@ -138,7 +155,7 @@ class LegalProceedingRepository:
             stmt = stmt.where(or_(
                 LegalProceeding.title.ilike(pattern, escape=LIKE_ESCAPE),
                 Contact.name.ilike(pattern, escape=LIKE_ESCAPE),
-                LegalProceeding.apartment_number.ilike(pattern, escape=LIKE_ESCAPE),
+                Contact.apartment_number.ilike(pattern, escape=LIKE_ESCAPE),
             ))
         return stmt
 
@@ -151,7 +168,8 @@ class LegalProceedingRepository:
         creator = aliased(User, name="creator")
         landlord = aliased(Contact, name="linked_landlord")
         stmt = (
-            base.add_columns(Contact.name, Project.name, creator.full_name, landlord.name)
+            base.add_columns(Contact.name, Project.name, creator.full_name, landlord.name,
+                             Contact.apartment_number, ledger_total_expr())
             .outerjoin(creator, creator.id == LegalProceeding.created_by)
             .outerjoin(landlord, and_(LegalProceeding.party_role == PartyRole.TENANT,
                                       landlord.id == LegalProceeding.landlord_contact_id))
@@ -159,8 +177,8 @@ class LegalProceedingRepository:
                       LegalProceeding.opened_at.desc(), LegalProceeding.id.desc())
             .offset(offset).limit(limit)
         )
-        rows = [ProceedingRow(p, cname, pname, uname, lname)
-                for p, cname, pname, uname, lname in (await self.db.execute(stmt))]
+        rows = [ProceedingRow(p, cname, pname, uname, lname, apartment, _money(total))
+                for p, cname, pname, uname, lname, apartment, total in (await self.db.execute(stmt))]
         return rows, total
 
     async def linked_landlords(self, *, visible_to: int | None) -> list[tuple[int, str]]:
@@ -184,9 +202,9 @@ class LegalProceedingRepository:
         return bool((await self.db.execute(stmt)).scalar())
 
     async def has_open_proceeding_for_contact(self, contact_id: int) -> bool:
-        """Is this contact a party (primary or linked landlord) of an open proceeding?"""
-        stmt = select(exists().where(or_(LegalProceeding.contact_id == contact_id,
-                                         LegalProceeding.landlord_contact_id == contact_id),
+        """Is this contact the primary party of an open proceeding? (A linked landlord
+        has no required details beyond a name and a phone.)"""
+        stmt = select(exists().where(LegalProceeding.contact_id == contact_id,
                                      LegalProceeding.status == ProceedingStatus.OPEN))
         return bool((await self.db.execute(stmt)).scalar())
 
@@ -203,18 +221,25 @@ class LegalProceedingRepository:
                     else LegalProceeding.project_id)
         group_name = (func.coalesce(parent.name, Project.name) if rollup_to_parent else Project.name)
         is_open = LegalProceeding.status == ProceedingStatus.OPEN
+        totals = (
+            select(LedgerItem.legal_proceeding_id.label("pid"), func.sum(LedgerItem.amount).label("total"))
+            .where(LedgerItem.legal_proceeding_id.is_not(None), LedgerItem.archived_at.is_(None))
+            .group_by(LedgerItem.legal_proceeding_id)
+            .subquery()
+        )
         stmt = (
             select(
                 group_id.label("pid"),
                 group_name.label("pname"),
                 func.count().filter(is_open),
                 func.count().filter(~is_open),
-                func.coalesce(func.sum(case((is_open, LegalProceeding.claim_amount), else_=None)), 0),
+                func.coalesce(func.sum(case((is_open, totals.c.total), else_=None)), 0),
                 func.count(func.distinct(LegalProceeding.contact_id)),
             )
             .select_from(LegalProceeding)
             .outerjoin(Project, Project.id == LegalProceeding.project_id)
             .outerjoin(parent, parent.id == Project.relation_project)
+            .outerjoin(totals, totals.c.pid == LegalProceeding.id)
             .group_by(group_id, group_name)
         )
         if visible_to is not None:
@@ -227,6 +252,29 @@ class LegalProceedingRepository:
         ]
         rows.sort(key=lambda r: (-r.open_count, r.project_name or ""))
         return rows
+
+    # ── ledger ───────────────────────────────────────────────────────────────
+
+    async def ledger_items(self, proceeding_id: int) -> list[LedgerItem]:
+        """The active items of the proceeding: base amounts first, then additions."""
+        stmt = (select(LedgerItem)
+                .where(LedgerItem.legal_proceeding_id == proceeding_id, LedgerItem.archived_at.is_(None))
+                .order_by(LedgerItem.sort_order, LedgerItem.id))
+        return list((await self.db.execute(stmt)).scalars())
+
+    async def get_ledger_item(self, proceeding_id: int, item_id: int) -> LedgerItem | None:
+        stmt = select(LedgerItem).where(LedgerItem.id == item_id, LedgerItem.legal_proceeding_id == proceeding_id)
+        return (await self.db.execute(stmt)).scalar_one_or_none()
+
+    async def next_ledger_sort_order(self, proceeding_id: int) -> int:
+        stmt = select(func.max(LedgerItem.sort_order)).where(LedgerItem.legal_proceeding_id == proceeding_id)
+        value = (await self.db.execute(stmt)).scalar_one_or_none()
+        return 0 if value is None else value + 1
+
+    async def ledger_total(self, proceeding_id: int) -> Decimal:
+        stmt = select(func.sum(LedgerItem.amount)).where(LedgerItem.legal_proceeding_id == proceeding_id,
+                                                         LedgerItem.archived_at.is_(None))
+        return _money((await self.db.execute(stmt)).scalar_one_or_none())
 
     # ── stages ───────────────────────────────────────────────────────────────
 

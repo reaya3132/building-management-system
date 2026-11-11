@@ -27,8 +27,6 @@ def _blank_to_none(value: Any) -> Any:
 
 # Optional; blank means "no email" (as before); anything else must be a valid address.
 ContactEmail = Annotated[EmailStr | None, BeforeValidator(_blank_to_none)]
-# A party of a proceeding must have a valid email (the contacts table itself does not).
-RequiredContactEmail = Annotated[EmailStr, BeforeValidator(_blank_to_none)]
 
 
 class _Out(BaseModel):
@@ -59,6 +57,7 @@ class ContactCreate(_In):
     phone: str = Field(max_length=50)
     phone_2: str | None = Field(None, max_length=50)
     address: str | None = Field(None, max_length=500)
+    apartment_number: str | None = Field(None, max_length=32)
     notes: str | None = None
 
 
@@ -70,6 +69,7 @@ class ContactUpdate(_In):
     phone: str | None = Field(None, max_length=50)
     phone_2: str | None = Field(None, max_length=50)
     address: str | None = Field(None, max_length=500)
+    apartment_number: str | None = Field(None, max_length=32)
     notes: str | None = None
     is_active: bool | None = None
 
@@ -98,6 +98,7 @@ class ContactSummary(_Out):
     phone_2: str | None = None
     email: str | None = None
     address: str | None = None
+    apartment_number: str | None = None
 
 
 class ContactOut(_Out):
@@ -108,6 +109,7 @@ class ContactOut(_Out):
     phone: str | None = None
     phone_2: str | None = None
     address: str | None = None
+    apartment_number: str | None = None
     notes: str | None = None
     is_active: bool
     created_at: datetime
@@ -144,8 +146,8 @@ class ProceedingListItem(_Out):
     title: str
     status: Literal["open", "closed"]
     party_role: PartyRoleLiteral
-    apartment_number: str
-    claim_amount: Decimal | None = None
+    apartment_number: str | None = None    # of the primary contact
+    total_amount: Decimal
     contact: Ref
     linked_landlord: Ref | None = None   # only in a tenant's proceeding
     project: Ref | None = None
@@ -164,30 +166,73 @@ class ProceedingPage(_Out):
 
 
 class ContactDetails(_In):
-    """A new card created while opening a proceeding."""
+    """A new card created while opening a proceeding (required fields depend on the role)."""
     kind: ContactKindLiteral | None = None
     name: str | None = Field(None, max_length=255)
-    email: RequiredContactEmail
+    email: ContactEmail = None
     phone: str | None = Field(None, max_length=50)
     phone_2: str | None = Field(None, max_length=50)
     address: str | None = Field(None, max_length=500)
+    apartment_number: str | None = Field(None, max_length=32)
     notes: str | None = None
 
 
+class ContactCompletion(_In):
+    """Values for fields that are empty on an existing card. Never overwrites."""
+    phone: str | None = Field(None, max_length=50)
+    phone_2: str | None = Field(None, max_length=50)
+    email: ContactEmail = None
+    address: str | None = Field(None, max_length=500)
+    apartment_number: str | None = Field(None, max_length=32)
+
+
 class PartySelection(_In):
-    """Exactly one of: an existing contact, used as it is, or the details of a new one."""
+    """Exactly one of: an existing contact (optionally completing its empty fields),
+    or the details of a new one."""
     contact_id: int | None = None
+    complete: ContactCompletion | None = None
     details: ContactDetails | None = None
 
     @model_validator(mode="after")
     def _exactly_one(self):
         if (self.contact_id is None) == (self.details is None):
             raise ValueError("provide either contact_id or details")
+        if self.complete is not None and self.contact_id is None:
+            raise ValueError("complete applies only to an existing contact")
         return self
 
 
 class OpenProceedingStatus(_Out):
     has_open: bool
+
+
+class LedgerItemCreate(_In):
+    subject: str = Field(max_length=255)
+    amount: Decimal
+
+
+class LedgerItemUpdate(_In):
+    subject: str | None = Field(None, max_length=255)
+    amount: Decimal | None = None
+
+    @model_validator(mode="after")
+    def _not_empty(self):
+        if not self.model_fields_set:
+            raise ValueError("at least one field must be provided")
+        return self
+
+
+class LedgerItemOut(_Out):
+    id: int
+    item_type: Literal["base_amount", "addition"]
+    subject: str
+    amount: Decimal
+    sort_order: int
+
+
+class LedgerItemResult(_Out):
+    item: LedgerItemOut
+    total_amount: Decimal
 
 
 class ProceedingCreate(_In):
@@ -197,18 +242,15 @@ class ProceedingCreate(_In):
     confirm_duplicate_contact: bool = False  # create a new contact although its phone is already known
     party_role: PartyRoleLiteral
     title: str = Field(max_length=255)
-    apartment_number: str = Field(max_length=32)
+    base_items: list[LedgerItemCreate] | None = None     # at least one (enforced by the service)
     claim_details: str | None = None
-    claim_amount: Decimal | None = None
     project_id: int | None = None
 
 
 class ProceedingUpdate(_In):
     """The parties (contact_id, party_role, landlord_contact_id) are rejected here."""
     title: str | None = Field(None, max_length=255)
-    apartment_number: str | None = Field(None, max_length=32)
     claim_details: str | None = None
-    claim_amount: Decimal | None = None
     project_id: int | None = None
 
     @model_validator(mode="after")
@@ -246,9 +288,9 @@ class ProceedingDetailOut(_Out):
     title: str
     status: Literal["open", "closed"]
     party_role: PartyRoleLiteral
-    apartment_number: str
     claim_details: str | None = None
-    claim_amount: Decimal | None = None
+    total_amount: Decimal
+    ledger_items: list[LedgerItemOut]
     contact: ContactSummary  # the primary contact, whatever party_role is
     linked_landlord: ContactSummary | None = None   # only in a tenant's proceeding
     project: Ref | None = None
@@ -317,6 +359,7 @@ class DocumentOut(_Out):
     id: int
     file_name: str | None = None
     download_url: str
+    preview_url: str | None = None
     uploaded_by: UserRef | None = None
     uploaded_at: datetime | None = None
     stage_key: str | None = None

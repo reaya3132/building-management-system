@@ -54,25 +54,25 @@ _DOOR_NOTICE_COMPONENTS = (
 STAGES: tuple[StageDefinition, ...] = (
     StageDefinition(
         key=STAGE1_KEY,
-        label="הודעות גבייה",
+        label="שליחת הודעות גבייה",
         description="תיעוד פניות הגבייה לדייר: מייל, וואטסאפ או ערוץ אחר.",
         requires_communication=True,
     ),
     StageDefinition(
         key="first_door_notice",
-        label="הודעה ראשונה על הדלת",
+        label="מכתב ראשון על הדלת",
         description="הדבקת מכתב ראשון על דלת הדירה ושליחתו בערוצים נוספים.",
         components=_DOOR_NOTICE_COMPONENTS,
     ),
     StageDefinition(
         key="second_door_notice",
-        label="הודעה שנייה על הדלת",
-        description="הדבקת מכתב שני על דלת הדירה ושליחתו בערוצים נוספים.",
+        label="מכתב נוסף על הדלת",
+        description="הדבקת מכתב נוסף על דלת הדירה ושליחתו בערוצים נוספים.",
         components=_DOOR_NOTICE_COMPONENTS,
     ),
     StageDefinition(
         key="lawyer_warning",
-        label="מכתב התראה מעורך דין",
+        label="מכתב התראה מעו\"ד",
         description="מכתב התראה מעורך דין ושליחתו, כולל דואר רשום.",
         components=(
             StageComponent("lawyer_letter", "מכתב עורך הדין"),
@@ -84,11 +84,11 @@ STAGES: tuple[StageDefinition, ...] = (
     ),
     StageDefinition(
         key="supervisor_claim",
-        label="תביעה למפקח על הבתים המשותפים",
-        description="הגשת התביעה למפקח וקבלת החלטתו.",
+        label="תביעה מול המפקחת",
+        description="פתיחת הליך התביעה מול המפקחת ותיעוד החלטתה.",
         components=(
-            StageComponent("claim_filing", "הגשת התביעה"),
-            StageComponent("supervisor_decision", "החלטת המפקח"),
+            StageComponent("claim_filing", "פתיחת הליך התביעה"),
+            StageComponent("supervisor_decision", "החלטת המפקחת"),
         ),
     ),
 )

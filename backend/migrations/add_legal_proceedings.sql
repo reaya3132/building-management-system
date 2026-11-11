@@ -22,9 +22,10 @@
 -- still verifies it. The state detection looks only at the four module tables.
 --
 -- The file detects the state of public and acts accordingly (step 2): all four tables
--- missing -> created; the previous structure -> upgraded with ALTER (data kept, no table
--- dropped; stops if data could not be carried over); the current structure -> only
--- verified; a partial or unrecognised state -> stops without changing anything.
+-- missing -> created; the current structure -> only verified; a structure with
+-- legal_proceedings.apartment_number -> stops and points to
+-- upgrade_ledger_items_and_legal_fields.sql; a partial or unrecognised state -> stops
+-- without changing anything.
 --
 -- Re-run safety does not rely on IF NOT EXISTS alone. The DDL is defined once
 -- (pg_temp.legal_ddl) and executed twice:
@@ -70,6 +71,7 @@ BEGIN
         phone       VARCHAR(50)   NOT NULL,
         phone_2     VARCHAR(50)   NULL,
         address     VARCHAR(500)  NULL,
+        apartment_number VARCHAR(32) NULL,
         notes       TEXT          NULL,
         is_active   BOOLEAN       NOT NULL DEFAULT true,
         created_by  INTEGER       NULL,
@@ -93,10 +95,8 @@ BEGIN
         project_id     INTEGER        NULL,
         party_role     VARCHAR(20)    NOT NULL,
         landlord_contact_id INTEGER   NULL,
-        apartment_number VARCHAR(32)  NOT NULL,
         title          VARCHAR(255)   NOT NULL,
         claim_details  TEXT           NULL,
-        claim_amount   NUMERIC(14, 2) NULL,
         status         VARCHAR(20)    NOT NULL,
         opened_at      TIMESTAMP      NOT NULL,
         closed_at      TIMESTAMP      NULL,
@@ -115,9 +115,7 @@ BEGIN
         CONSTRAINT ck_lp_landlord CHECK (
             (party_role = 'tenant' AND landlord_contact_id IS NOT NULL)
             OR (party_role <> 'tenant' AND landlord_contact_id IS NULL)),
-        CONSTRAINT ck_lp_apartment_number CHECK (trim(apartment_number) <> ''),
         CONSTRAINT ck_lp_title CHECK (trim(title) <> ''),
-        CONSTRAINT ck_lp_amount CHECK (claim_amount IS NULL OR claim_amount > 0),
         CONSTRAINT ck_lp_status CHECK (status IN ('open', 'closed')),
         CONSTRAINT ck_lp_closed CHECK (
             (status = 'open' AND closed_at IS NULL AND closed_by IS NULL AND close_reason IS NULL)
@@ -213,6 +211,10 @@ BEGIN
                     AND conname = 'ck_contacts_phone') THEN
         RAISE EXCEPTION 'public.contacts has the previous structure: run add_contacts.sql first';
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+                    AND table_name = 'contacts' AND column_name = 'apartment_number') THEN
+        RAISE EXCEPTION 'public.contacts has no apartment_number: run add_contacts.sql first';
+    END IF;
 END $$;
 
 -- 1. Reference copy, always built from scratch ----------------------------------
@@ -220,21 +222,18 @@ CREATE SCHEMA legal_migration_ref;  -- fails (safe stop) if a stale copy exists
 SET LOCAL search_path = legal_migration_ref, public;
 SELECT pg_temp.legal_ddl(true);
 
--- 2. Detect the state of the module tables; upgrade the previous structure ---------
--- Based only on the four module tables. Only these outcomes continue: all four
--- missing (created in step 3), the exact previous structure (upgraded here, data
--- kept), or the current structure (step 3 creates nothing). Everything else stops.
--- Step 5 still verifies the result, contacts included.
+-- 2. Detect the state of the module tables ---------------------------------------
+-- Based only on the four module tables. Only all four missing (created in step 3) or
+-- the current structure (step 3 creates nothing) continue. Step 5 still verifies the
+-- result, contacts included.
 DO $$
 DECLARE
     tables CONSTANT text[] := ARRAY['legal_proceedings', 'legal_proceeding_stages',
                                     'legal_proceeding_entries', 'legal_proceeding_assignees'];
     present text[];
-    has_unit_label boolean;   has_apartment boolean;   has_landlord boolean;
-    role_is_old boolean;      role_is_new boolean;
-    has_ck_landlord boolean;  has_ck_apartment boolean; has_ix_landlord boolean;
-    is_old boolean;           is_new boolean;
-    n_tenant bigint;          n_blank_unit bigint;      n_long_unit bigint;
+    has_unit_label boolean;   has_apartment boolean;   has_claim boolean;
+    has_landlord boolean;     role_is_new boolean;
+    has_ck_landlord boolean;  has_ix_landlord boolean;
 BEGIN
     SELECT coalesce(array_agg(t ORDER BY t), '{}') INTO present
       FROM unnest(tables) t WHERE to_regclass('public.' || t) IS NOT NULL;
@@ -252,60 +251,26 @@ BEGIN
                                AND table_name = 'legal_proceedings' AND column_name = 'unit_label');
     has_apartment  := EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
                                AND table_name = 'legal_proceedings' AND column_name = 'apartment_number');
+    has_claim      := EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+                               AND table_name = 'legal_proceedings' AND column_name = 'claim_amount');
     has_landlord   := EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
                                AND table_name = 'legal_proceedings' AND column_name = 'landlord_contact_id');
-    role_is_old := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.legal_proceedings'::regclass
-                            AND conname = 'ck_lp_party_role' AND pg_get_constraintdef(oid) LIKE '%''owner''%');
     role_is_new := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.legal_proceedings'::regclass
                             AND conname = 'ck_lp_party_role' AND pg_get_constraintdef(oid) LIKE '%''landlord''%');
     has_ck_landlord  := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.legal_proceedings'::regclass
                                  AND conname = 'ck_lp_landlord');
-    has_ck_apartment := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.legal_proceedings'::regclass
-                                 AND conname = 'ck_lp_apartment_number');
     has_ix_landlord  := to_regclass('public.ix_lp_landlord_status') IS NOT NULL;
 
-    is_new := NOT has_unit_label AND has_apartment AND has_landlord AND role_is_new AND NOT role_is_old
-              AND has_ck_landlord AND has_ck_apartment AND has_ix_landlord;
-    is_old := has_unit_label AND NOT has_apartment AND NOT has_landlord AND role_is_old AND NOT role_is_new
-              AND NOT has_ck_landlord AND NOT has_ck_apartment AND NOT has_ix_landlord;
-
-    IF is_new THEN
-        RAISE NOTICE 'Legal schema state: current; verifying only';
-        RETURN;
+    IF has_apartment AND has_claim AND NOT has_unit_label AND has_landlord AND role_is_new
+       AND has_ck_landlord AND has_ix_landlord THEN
+        RAISE EXCEPTION 'legal_proceedings still has apartment_number and claim_amount: run upgrade_ledger_items_and_legal_fields.sql. Nothing was changed.';
     END IF;
-    IF NOT is_old THEN
-        RAISE EXCEPTION 'Legal schema is in an unrecognised state (neither the previous nor the current structure): unit_label=%, apartment_number=%, landlord_contact_id=%, role_old=%, role_new=%, ck_lp_landlord=%, ck_lp_apartment_number=%, ix_lp_landlord_status=%. Nothing was changed.',
-            has_unit_label, has_apartment, has_landlord, role_is_old, role_is_new,
-            has_ck_landlord, has_ck_apartment, has_ix_landlord;
+    IF has_apartment OR has_claim OR has_unit_label OR NOT has_landlord OR NOT role_is_new
+       OR NOT has_ck_landlord OR NOT has_ix_landlord THEN
+        RAISE EXCEPTION 'Legal schema is in an unrecognised state: unit_label=%, apartment_number=%, claim_amount=%, landlord_contact_id=%, role_new=%, ck_lp_landlord=%, ix_lp_landlord_status=%. Nothing was changed.',
+            has_unit_label, has_apartment, has_claim, has_landlord, role_is_new, has_ck_landlord, has_ix_landlord;
     END IF;
-
-    -- Previous structure: check the data under lock, before changing any column.
-    LOCK TABLE public.legal_proceedings IN ACCESS EXCLUSIVE MODE;
-    SELECT count(*) FILTER (WHERE party_role = 'tenant'),
-           count(*) FILTER (WHERE unit_label IS NULL OR trim(unit_label) = ''),
-           count(*) FILTER (WHERE length(unit_label) > 32)
-      INTO n_tenant, n_blank_unit, n_long_unit FROM public.legal_proceedings;
-    IF n_tenant + n_blank_unit + n_long_unit > 0 THEN
-        RAISE EXCEPTION 'Cannot upgrade the legal schema without losing or inventing data: tenant proceedings without a landlord=%, proceedings without an apartment number=%, apartment numbers longer than 32=%. Complete the data first; nothing was changed.',
-            n_tenant, n_blank_unit, n_long_unit;
-    END IF;
-
-    RAISE NOTICE 'Legal schema state: previous; upgrading';
-    ALTER TABLE public.legal_proceedings DROP CONSTRAINT ck_lp_party_role;
-    UPDATE public.legal_proceedings SET party_role = 'landlord' WHERE party_role = 'owner';
-    ALTER TABLE public.legal_proceedings RENAME COLUMN unit_label TO apartment_number;
-    ALTER TABLE public.legal_proceedings
-        ALTER COLUMN apartment_number TYPE VARCHAR(32),
-        ALTER COLUMN apartment_number SET NOT NULL,
-        ADD COLUMN landlord_contact_id INTEGER NULL,
-        ADD FOREIGN KEY (landlord_contact_id) REFERENCES public.contacts (id) ON DELETE RESTRICT,
-        ADD CONSTRAINT ck_lp_party_role CHECK (party_role IN ('tenant', 'landlord', 'supplier', 'other')),
-        ADD CONSTRAINT ck_lp_landlord CHECK (
-            (party_role = 'tenant' AND landlord_contact_id IS NOT NULL)
-            OR (party_role <> 'tenant' AND landlord_contact_id IS NULL)),
-        ADD CONSTRAINT ck_lp_apartment_number CHECK (trim(apartment_number) <> '');
-    CREATE INDEX ix_lp_landlord_status ON public.legal_proceedings (landlord_contact_id, status)
-        WHERE party_role = 'tenant';
+    RAISE NOTICE 'Legal schema state: current; verifying only';
 END $$;
 
 -- 3. Target: create only what is missing ----------------------------------------

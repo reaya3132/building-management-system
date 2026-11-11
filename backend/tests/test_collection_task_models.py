@@ -144,12 +144,12 @@ class TestCollectionModels:
                 table: {(fk["constrained_columns"][0], fk["referred_table"], fk["options"].get("ondelete"))
                         for fk in insp.get_foreign_keys(table)}
                 for table in ("collection_task_details", "collection_amount_adjustments",
-                              "collection_ledger_items")
+                              "ledger_items")
             }
             indexes = {
                 table: {ix["name"] for ix in insp.get_indexes(table)}
                 for table in ("collection_task_details", "collection_amount_adjustments",
-                              "collection_ledger_items", "tasks")
+                              "ledger_items", "tasks")
             }
             return fks, indexes
 
@@ -162,15 +162,16 @@ class TestCollectionModels:
         assert fks["collection_amount_adjustments"] == {
             ("task_id", "tasks", "RESTRICT"), ("created_by_user_id", "users", "RESTRICT"),
         }
-        assert fks["collection_ledger_items"] == {
-            ("task_id", "tasks", "RESTRICT"), ("created_by_user_id", "users", "RESTRICT"),
+        assert fks["ledger_items"] == {
+            ("task_id", "tasks", "RESTRICT"), ("legal_proceeding_id", "legal_proceedings", "RESTRICT"),
+            ("created_by_user_id", "users", "RESTRICT"),
             ("updated_by_user_id", "users", "RESTRICT"), ("archived_by_user_id", "users", "RESTRICT"),
         }
         assert indexes["collection_task_details"] >= {
             "ix_ctd_billing_month_project_id", "ix_ctd_billing_month", "ix_ctd_project_id",
         }
         assert indexes["collection_amount_adjustments"] >= {"ix_caa_task_id"}
-        assert indexes["collection_ledger_items"] >= {"ix_cli_task_id", "ix_cli_task_id_active"}
+        assert indexes["ledger_items"] >= {"ix_cli_task_id", "ix_cli_task_id_active"}
         assert "ix_tasks_task_kind" in indexes["tasks"]
 
 

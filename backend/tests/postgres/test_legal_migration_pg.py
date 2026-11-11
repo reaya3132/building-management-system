@@ -10,7 +10,7 @@ Scenarios (each in its own throw-away database):
   S7  rollback safety stops
   S8  rollback: exact pre-migration schema, data intact, re-migratable
   OWN ownership: rollback never drops what the migration does not own
-  ST  schema state: previous structure upgraded (data kept), partial / unrecognised stop
+  ST  schema state: older structures, partial and unrecognised states stop
 """
 from __future__ import annotations
 
@@ -118,8 +118,8 @@ async def test_s4_fresh_database_keeps_pre_existing_context_key_unmarked(dbs):
 # ── S5 ───────────────────────────────────────────────────────────────────────
 
 MISMATCHES = [
-    ("ALTER TABLE legal_proceedings DROP CONSTRAINT ck_lp_amount; "
-     "ALTER TABLE legal_proceedings ADD CONSTRAINT ck_lp_amount CHECK (claim_amount >= 0)", "ck_lp_amount"),
+    ("ALTER TABLE legal_proceedings DROP CONSTRAINT ck_lp_title; "
+     "ALTER TABLE legal_proceedings ADD CONSTRAINT ck_lp_title CHECK (title <> '')", "ck_lp_title"),
     ("ALTER TABLE legal_proceedings ALTER COLUMN title TYPE varchar(100)", "legal_proceedings.title"),
     ("ALTER TABLE legal_proceeding_entries DROP CONSTRAINT fk_lpe_stage", "fk_lpe_stage"),
     ("ALTER TABLE legal_proceeding_stages DROP CONSTRAINT legal_proceeding_stages_proceeding_id_fkey; "
@@ -151,25 +151,20 @@ async def test_s5_context_key_with_other_type_stops(dbs):
 
 # ── ST: schema state detection ───────────────────────────────────────────────
 
-PREVIOUS_STRUCTURE = """
-DROP INDEX ix_contacts_phone_2;
+OLDEST_STRUCTURE = """
 DROP INDEX ix_lp_landlord_status;
-ALTER TABLE contacts DROP CONSTRAINT ck_contacts_phone;
-ALTER TABLE contacts ALTER COLUMN phone DROP NOT NULL;
 ALTER TABLE legal_proceedings DROP CONSTRAINT ck_lp_landlord;
-ALTER TABLE legal_proceedings DROP CONSTRAINT ck_lp_apartment_number;
 ALTER TABLE legal_proceedings DROP CONSTRAINT ck_lp_party_role;
 ALTER TABLE legal_proceedings DROP COLUMN landlord_contact_id;
-ALTER TABLE legal_proceedings RENAME COLUMN apartment_number TO unit_label;
-ALTER TABLE legal_proceedings ALTER COLUMN unit_label TYPE varchar(100);
-ALTER TABLE legal_proceedings ALTER COLUMN unit_label DROP NOT NULL;
+ALTER TABLE legal_proceedings ADD COLUMN unit_label varchar(100);
+ALTER TABLE legal_proceedings ADD COLUMN claim_amount numeric(14, 2);
 ALTER TABLE legal_proceedings ADD CONSTRAINT ck_lp_party_role CHECK (party_role IN ('owner', 'tenant', 'other'));
 """
 
 
-async def _previous(db):
+async def _oldest(db):
     await pg.create_all(db, include_legal=True)
-    for statement in filter(str.strip, PREVIOUS_STRUCTURE.split(";")):
+    for statement in filter(str.strip, OLDEST_STRUCTURE.split(";")):
         await pg.execute(db, statement)
 
 
@@ -179,72 +174,24 @@ async def _add_user(db) -> int:
     return await pg.query(db, "SELECT id FROM users WHERE email = 'legal-mig@x.io'")
 
 
-async def _add_proceeding(db, user, *, phone="'050'", role="owner", unit="'Apt 4'"):
-    await pg.execute(db, f"INSERT INTO contacts (kind, name, phone, created_at) VALUES ('person', 'c', {phone}, now())")
-    contact = await pg.query(db, "SELECT max(id) FROM contacts")
-    await pg.execute(db, "INSERT INTO legal_proceedings (contact_id, party_role, unit_label, title, status, opened_at, "
-                         f"created_by, created_at) VALUES ({contact}, '{role}', {unit}, 't', 'open', now(), {user}, now())")
-
-
-async def test_st_previous_structure_is_upgraded_to_the_model_schema(dbs):
-    reference = await dbs("st_ref")
-    await pg.migrate(reference)
-    db = await dbs("st_old")
-    await _previous(db)
-    docs_before = await pg.documents_fingerprint(db)
-    await _ok(db, CONTACTS_MIGRATION)
-    await _ok(db, MIGRATION)
-    await _ok(db, INDEX_MIGRATION)
-    await _no_ref_schema(db)
-    assert await pg.marked_tables(db) == 4
-    assert await pg.documents_fingerprint(db) == docs_before
-    assert await pg.schema_snapshot(db) == await pg.schema_snapshot(reference)  # same end state as a fresh install
-    after = await pg.schema_snapshot(db)
-    await _ok(db, CONTACTS_MIGRATION)
-    await _ok(db, MIGRATION)  # now the current structure: verified, nothing created
-    await _ok(db, INDEX_MIGRATION)
-    assert await pg.schema_snapshot(db) == after
-    assert await pg.documents_fingerprint(db) == docs_before
-
-
-async def test_st_upgrade_keeps_existing_rows(dbs):
-    db = await dbs("st_data")
-    await _previous(db)
-    await _add_proceeding(db, await _add_user(db))
-    await _add_proceeding(db, await pg.query(db, "SELECT id FROM users WHERE email = 'legal-mig@x.io'"), role="other", unit="'B'")
-    before = await pg.query(db, "SELECT string_agg(id::text || contact_id::text || title, ',' ORDER BY id) FROM legal_proceedings")
-    await _ok(db, CONTACTS_MIGRATION)
-    await _ok(db, MIGRATION)
-    assert await pg.query(db, "SELECT string_agg(id::text || contact_id::text || title, ',' ORDER BY id) FROM legal_proceedings") == before
-    assert await pg.query(db, "SELECT string_agg(party_role || ':' || apartment_number, ',' ORDER BY id) FROM legal_proceedings") == "landlord:Apt 4,other:B"
-    assert await pg.query(db, "SELECT count(landlord_contact_id) FROM legal_proceedings") == 0
-    assert await pg.query(db, "SELECT count(*) FROM contacts") == 2
-    data = "SELECT string_agg(concat_ws('|', id, party_role, apartment_number, contact_id), ',' ORDER BY id) FROM legal_proceedings"
-    after_first = await pg.query(db, data)
-    await _ok(db, CONTACTS_MIGRATION)
-    await _ok(db, MIGRATION)
-    assert await pg.query(db, data) == after_first  # a re-run changes no data
-
-
-BLOCKING_DATA = [
-    ({"role": "tenant"}, "tenant proceedings without a landlord=1"),
-    ({"unit": "NULL"}, "without an apartment number=1"),
-    ({"unit": "'  '"}, "without an apartment number=1"),
-    ({"unit": "'" + "x" * 33 + "'"}, "longer than 32=1"),
-]
-
-
-@pytest.mark.parametrize("row, needle", BLOCKING_DATA, ids=[b[1] + str(i) for i, b in enumerate(BLOCKING_DATA)])
-async def test_st_upgrade_stops_when_data_cannot_be_carried_over(dbs, row, needle):
-    db = await dbs("st_block")
-    await _previous(db)
-    await _add_proceeding(db, await _add_user(db), **row)
-    await _ok(db, CONTACTS_MIGRATION)
+async def test_st_structure_before_the_upgrade_points_to_the_upgrade_file(dbs):
+    db = await dbs("st_prev")
+    await pg.migrate(db)
+    await pg.to_previous_legal_fields(db)
+    await pg.execute(db, "ALTER TABLE contacts ADD COLUMN apartment_number varchar(32)")
     before = await pg.schema_snapshot(db)
-    await _stops(db, MIGRATION, needle)
+    await _stops(db, MIGRATION, "run upgrade_ledger_items_and_legal_fields.sql")
     await _no_ref_schema(db)
     assert await pg.schema_snapshot(db) == before
-    assert await pg.query(db, "SELECT count(*) FROM legal_proceedings") == 1
+
+
+async def test_st_oldest_structure_stops(dbs):
+    db = await dbs("st_old")
+    await _oldest(db)
+    before = await pg.schema_snapshot(db)
+    await _stops(db, MIGRATION, "unrecognised state")
+    await _no_ref_schema(db)
+    assert await pg.schema_snapshot(db) == before
 
 
 @pytest.mark.parametrize("missing", ["legal_proceeding_assignees", "legal_proceeding_stages"])
@@ -269,8 +216,7 @@ async def test_st_contacts_without_module_tables_creates_the_module(dbs):
 
 async def test_st_half_upgraded_structure_stops(dbs):
     db = await dbs("st_mixed")
-    await _previous(db)
-    await _ok(db, CONTACTS_MIGRATION)
+    await _oldest(db)
     await pg.execute(db, "ALTER TABLE legal_proceedings ADD COLUMN landlord_contact_id int")
     before = await pg.schema_snapshot(db)
     await _stops(db, MIGRATION, "unrecognised state")
@@ -426,8 +372,8 @@ async def test_s7_rollback_safety_stops_change_nothing(dbs):
     user = await _add_user(db)
     await pg.execute(db, "INSERT INTO contacts (kind, name, phone, created_at) VALUES ('person', 'x', '1', now())")
     contact = await pg.query(db, "SELECT max(id) FROM contacts")
-    await pg.execute(db, "INSERT INTO legal_proceedings (contact_id, party_role, apartment_number, title, status, "
-                         f"opened_at, created_by, created_at) VALUES ({contact}, 'other', '4', 't', 'open', now(), {user}, now())")
+    await pg.execute(db, "INSERT INTO legal_proceedings (contact_id, party_role, title, status, "
+                         f"opened_at, created_by, created_at) VALUES ({contact}, 'other', 't', 'open', now(), {user}, now())")
     await _stops(db, ROLLBACK, "holds 1 row")
     await pg.execute(db, "DELETE FROM legal_proceedings")
     await pg.execute(db, "DELETE FROM contacts")

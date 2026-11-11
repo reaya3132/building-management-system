@@ -23,6 +23,7 @@ from backend.models.quote_subject import QuoteSubject
 from backend.models.quote_project import QuoteProject
 from backend.models.quote_line import QuoteLine
 from backend.models.task import Task, TaskLabel, TaskAttachment, TaskParticipant, TaskMessage, TaskMessageRead
+from backend.models.ledger_item import LedgerItem
 from backend.models.collection_task import CollectionTaskDetails, CollectionAmountAdjustment, CollectionLedgerItem
 from backend.models.project_note import ProjectNote
 from backend.models.contact import Contact
@@ -94,6 +95,7 @@ __all__ = [
     "LegalProceedingAssignee",
     "CollectionAmountAdjustment",
     "CollectionLedgerItem",
+    "LedgerItem",
     "UserNotification",
     "OutlookSync",
     "GroupTransactionDraft",

@@ -2,8 +2,9 @@
 
 - ``LegalProceeding``          one independent proceeding: a primary contact
                                (``contact_id``, typed by ``party_role``), the landlord
-                               linked to a tenant's proceeding, the apartment number,
-                               an optional project, claim details and amount.
+                               linked to a tenant's proceeding, an optional project and
+                               claim details. The apartment number is on the contact and
+                               the amounts are ``ledger_items`` rows.
 - ``LegalProceedingStage``     one row per fixed stage (configurations/legal/stages.py);
                                status changes only by an explicit complete / skip /
                                reopen action.
@@ -23,7 +24,6 @@ in backend/migrations/add_legal_proceedings.sql.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
 
 from sqlalchemy import (
     CheckConstraint,
@@ -33,7 +33,6 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
-    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -100,6 +99,9 @@ class LegalEvent:
     DOCUMENT_STORAGE_DELETE_FAILED = "document_storage_delete_failed"
     ASSIGNEE_ADDED = "assignee_added"
     ASSIGNEE_REMOVED = "assignee_removed"
+    LEDGER_ITEM_ADDED = "ledger_item_added"
+    LEDGER_ITEM_UPDATED = "ledger_item_updated"
+    LEDGER_ITEM_ARCHIVED = "ledger_item_archived"
 
 
 def _now() -> datetime:
@@ -115,9 +117,7 @@ class LegalProceeding(Base):
             " OR (party_role <> 'tenant' AND landlord_contact_id IS NULL)",
             name="ck_lp_landlord",
         ),
-        CheckConstraint("trim(apartment_number) <> ''", name="ck_lp_apartment_number"),
         CheckConstraint("trim(title) <> ''", name="ck_lp_title"),
-        CheckConstraint("claim_amount IS NULL OR claim_amount > 0", name="ck_lp_amount"),
         CheckConstraint("status IN ('open', 'closed')", name="ck_lp_status"),
         CheckConstraint(
             "(status = 'open' AND closed_at IS NULL AND closed_by IS NULL AND close_reason IS NULL)"
@@ -139,10 +139,8 @@ class LegalProceeding(Base):
     party_role: Mapped[str] = mapped_column(String(20), nullable=False)
     # The landlord of this tenant; only when party_role = 'tenant' (ck_lp_landlord).
     landlord_contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True)
-    apartment_number: Mapped[str] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     claim_details: Mapped[str | None] = mapped_column(Text, nullable=True)
-    claim_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=ProceedingStatus.OPEN)
     opened_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

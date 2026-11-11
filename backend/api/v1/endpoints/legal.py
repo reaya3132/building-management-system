@@ -43,6 +43,10 @@ from backend.schemas.legal import (
     EntryUpdate,
     HistoryEntry,
     HistoryPage,
+    LedgerItemCreate,
+    LedgerItemOut,
+    LedgerItemResult,
+    LedgerItemUpdate,
     MissingItem,
     OpenProceedingStatus,
     ProceedingCreate,
@@ -107,8 +111,10 @@ def _stage_definition(d) -> dict:
 def _detail(d: ProceedingDetail) -> ProceedingDetailOut:
     p = d.proceeding
     return ProceedingDetailOut(
-        id=p.id, title=p.title, status=p.status, party_role=p.party_role, apartment_number=p.apartment_number,
-        claim_details=p.claim_details, claim_amount=p.claim_amount, contact=_summary(d.contact),
+        id=p.id, title=p.title, status=p.status, party_role=p.party_role,
+        claim_details=p.claim_details, total_amount=d.total_amount,
+        ledger_items=[LedgerItemOut.model_validate(i, from_attributes=True) for i in d.ledger_items],
+        contact=_summary(d.contact),
         linked_landlord=_summary(d.linked_landlord) if d.linked_landlord else None,
         project=Ref(id=p.project_id, name=d.project_name) if p.project_id else None,
         created_by=_user(d.users.get(p.created_by)), opened_at=p.opened_at, closed_at=p.closed_at,
@@ -123,7 +129,7 @@ def _detail(d: ProceedingDetail) -> ProceedingDetailOut:
 
 
 def _document(v: DocumentView) -> DocumentOut:
-    return DocumentOut(id=v.document.id, file_name=v.document.file_name, download_url=v.download_url,
+    return DocumentOut(id=v.document.id, file_name=v.document.file_name, download_url=v.download_url, preview_url=v.preview_url,
                        uploaded_by=_user(v.uploaded_by), uploaded_at=v.uploaded_at,
                        stage_key=v.stage_key, component_key=v.component_key, entry_id=v.entry_id)
 
@@ -232,8 +238,8 @@ async def list_proceedings(
     return ProceedingPage(items=[
         ProceedingListItem(
             id=i.row.proceeding.id, title=i.row.proceeding.title, status=i.row.proceeding.status,
-            party_role=i.row.proceeding.party_role, apartment_number=i.row.proceeding.apartment_number,
-            claim_amount=i.row.proceeding.claim_amount,
+            party_role=i.row.proceeding.party_role, apartment_number=i.row.apartment_number,
+            total_amount=i.row.total_amount,
             contact=Ref(id=i.row.proceeding.contact_id, name=i.row.contact_name),
             linked_landlord=Ref(id=i.row.proceeding.landlord_id, name=i.row.linked_landlord_name)
             if i.row.proceeding.landlord_id else None,
@@ -278,6 +284,31 @@ async def reopen_proceeding(proceeding_id: int, db: DBSessionDep, user=current_u
                             data: ReasonBody | None = None):
     service = LegalProceedingService(db, user)
     return await _saved(db, _detail(await service.detail_of(await service.reopen(proceeding_id, data.reason if data else None))))
+
+
+async def _ledger_result(db, service: LegalProceedingService, proceeding_id: int, item) -> LedgerItemResult:
+    result = LedgerItemResult(item=LedgerItemOut.model_validate(item, from_attributes=True),
+                              total_amount=await service.ledger_total(proceeding_id))
+    return await _saved(db, result)
+
+
+@router.post("/proceedings/{proceeding_id}/ledger-items", response_model=LedgerItemResult, status_code=201)
+async def add_ledger_item(proceeding_id: int, data: LedgerItemCreate, db: DBSessionDep, user=current_user):
+    service = LegalProceedingService(db, user)
+    return await _ledger_result(db, service, proceeding_id, await service.add_ledger_item(proceeding_id, data.model_dump()))
+
+
+@router.patch("/proceedings/{proceeding_id}/ledger-items/{item_id}", response_model=LedgerItemResult)
+async def update_ledger_item(proceeding_id: int, item_id: int, data: LedgerItemUpdate, db: DBSessionDep, user=current_user):
+    service = LegalProceedingService(db, user)
+    item = await service.update_ledger_item(proceeding_id, item_id, data.model_dump(exclude_unset=True))
+    return await _ledger_result(db, service, proceeding_id, item)
+
+
+@router.post("/proceedings/{proceeding_id}/ledger-items/{item_id}/archive", response_model=LedgerItemResult)
+async def archive_ledger_item(proceeding_id: int, item_id: int, db: DBSessionDep, user=current_user):
+    service = LegalProceedingService(db, user)
+    return await _ledger_result(db, service, proceeding_id, await service.archive_ledger_item(proceeding_id, item_id))
 
 
 @router.get("/proceedings/{proceeding_id}/history", response_model=HistoryPage)
