@@ -17,7 +17,7 @@ const DOT: Record<LegalStage['status'], string> = {
 }
 
 /**
- * Compact horizontal navigator over the five fixed stages (same idea as the
+ * Compact horizontal navigator over the fixed stages (same idea as the
  * collection MonthStrip). On narrow screens only the numbers are shown, with the
  * selected stage's full name and status under them.
  */
@@ -27,7 +27,7 @@ export default function LegalStageStepper({ stages, selected, onSelect }: Props)
   const current = stages.find((s) => s.key === selected)
 
   return (
-    <nav aria-label="חמשת השלבים" className="rounded-2xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-sm px-3 py-2.5">
+    <nav aria-label="שלבי ההליך" className="rounded-2xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-sm px-3 py-2.5">
       <ol className="flex items-center gap-1 overflow-x-auto">
         {stages.map((stage, index) => {
           const isSelected = stage.key === selected

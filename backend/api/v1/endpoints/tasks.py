@@ -21,6 +21,7 @@ from backend.repositories.task_repository import ISRAEL_TZ, TaskRepository
 from backend.repositories.task_label_repository import TaskLabelRepository
 from backend.repositories.task_checklist_repository import TaskChecklistRepository
 from backend.repositories.user_repository import UserRepository
+from backend.services.user_lookup import load_active_users
 from backend.repositories.notification_repository import NotificationRepository
 from backend.schemas.task import (
     TaskCreate,
@@ -302,15 +303,10 @@ async def _load_active_assignees(user_repo: UserRepository, assignee_ids: list[i
 
     Raises HTTPException(404) with a Hebrew detail if any id is missing or
     inactive. Returns the users in the same order as ``assignee_ids`` so the
-    primary (first) stays first.
+    primary (first) stays first. The check itself is shared with the legal
+    proceedings module (``services/user_lookup.load_active_users``).
     """
-    loaded: list[User] = []
-    for assignee_id in assignee_ids:
-        candidate = await user_repo.get_by_id(assignee_id)
-        if not candidate or not candidate.is_active:
-            raise HTTPException(status_code=404, detail="User not found")
-        loaded.append(candidate)
-    return loaded
+    return await load_active_users(user_repo, assignee_ids)
 
 
 def _to_naive_utc(dt: datetime | None) -> datetime | None:

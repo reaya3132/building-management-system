@@ -37,15 +37,16 @@ vi.mock('../../../lib/api', () => ({ default: { get: vi.fn().mockResolvedValue({
 import { LegalAPI } from '../../../lib/legalApi'
 import { CollectionAPI } from '../../../lib/collectionApi'
 import LegalProceedings from '../../../pages/LegalProceedings'
+import httpApi from '../../../lib/api'
 
 const api = LegalAPI as unknown as Record<keyof typeof LegalAPI, ReturnType<typeof vi.fn>>
 
-function renderPage(role: 'Admin' | 'Member' = 'Admin') {
+function renderPage(role: 'Admin' | 'Member' = 'Admin', actions: string[] = ['read']) {
   const store = configureStore({
     reducer: { auth: authReducer, permissions: permissionsReducer } as any,
     preloadedState: {
       auth: { me: { id: 1, role, full_name: 'x', email: 'x@example.com' } },
-      permissions: { permissions: [{ resource_type: 'legal_proceeding', action: 'read' }], loaded: true },
+      permissions: { permissions: actions.map((action) => ({ resource_type: 'legal_proceeding', action })), loaded: true },
     } as any,
   })
   const Target = () => <div>עמוד הליך {useParams().proceedingId}</div>
@@ -127,8 +128,8 @@ describe('LegalProceedings', () => {
   })
 
   describe('create', () => {
-    const open = async () => {
-      renderPage()
+    const open = async (...args: Parameters<typeof renderPage>) => {
+      renderPage(...args)
       await userEvent.click(await screen.findByRole('button', { name: /הליך חדש/ }))
     }
     const fillBasics = async () => {
@@ -285,6 +286,42 @@ describe('LegalProceedings', () => {
       api.projectOptions.mockResolvedValueOnce([])
       await userEvent.click(screen.getByRole('button', { name: 'ניסיון חוזר' }))
       expect(await screen.findByText('אין פרויקטים פעילים לבחירה.')).toBeInTheDocument()
+    })
+
+    it('with the assigning permission, sends the chosen users and never offers the creator', async () => {
+      ;(httpApi.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [{ id: 1, full_name: 'אני היוצר' }, { id: 3, full_name: 'משה לוי' }, { id: 4, full_name: 'רות כץ' }] })
+      api.create.mockResolvedValue(undefined)
+      await open('Member', ['read', 'write', 'update'])
+      const field = screen.getByRole('region', { name: 'משתמשים משויכים' })
+      expect(within(field).getByText('יוצר ההליך מוגדר כאחראי הראשי.')).toBeInTheDocument()
+      await chooseRole('ספק')
+      await fillBasics()
+      await pickContact('חיפוש ספק')
+      await userEvent.click(within(field).getByRole('textbox'))
+      expect(within(field).queryByRole('button', { name: 'אני היוצר' })).not.toBeInTheDocument()
+      await userEvent.click(await within(field).findByRole('button', { name: 'משה לוי' }))
+      await userEvent.click(within(field).getByRole('button', { name: 'רות כץ' }))
+      await userEvent.click(screen.getByRole('button', { name: 'פתיחת הליך' }))
+      await waitFor(() => expect(api.create).toHaveBeenCalledTimes(1))
+      expect(api.create.mock.calls[0][0].assignee_ids).toEqual([3, 4])
+    })
+
+    it('without assignees, or with write only, the create request is unchanged', async () => {
+      api.create.mockResolvedValue(undefined)
+      await open('Member', ['read', 'write', 'update'])
+      await chooseRole('ספק')
+      await fillBasics()
+      await pickContact('חיפוש ספק')
+      await userEvent.click(screen.getByRole('button', { name: 'פתיחת הליך' }))
+      await waitFor(() => expect(api.create).toHaveBeenCalledTimes(1))
+      expect(api.create.mock.calls[0][0]).not.toHaveProperty('assignee_ids')  // none chosen: not sent
+    })
+
+    it('hides the assignees field from a user with write only', async () => {
+      await open('Member', ['read', 'write'])
+      expect(await screen.findByLabelText('נושא ההליך')).toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'משתמשים משויכים' })).not.toBeInTheDocument()
+      expect(httpApi.get).not.toHaveBeenCalledWith('/users/for-tasks')
     })
 
     it('sends the selection for a non-tenant without a landlord', async () => {

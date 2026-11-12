@@ -40,6 +40,7 @@ from backend.repositories.legal_proceeding_repository import (
 )
 from backend.services.audit_service import AuditService
 from backend.services.contact_service import ContactService
+from backend.services.legal_assignee_service import LegalAssigneeService
 from backend.services.legal_access import changed_fields, clean_text, is_admin, legal_error, LegalAccess, utc_now
 
 IMMUTABLE_PARTY_FIELDS = ("contact_id", "party_role", "landlord_contact_id")
@@ -239,6 +240,10 @@ class LegalProceedingService:
         an existing card (never changed here) or a new one. Everything
         runs in one transaction; the caller commits. Creates every stage (pending)."""
         await self.access.require(Action.WRITE.value)
+        values = dict(values)
+        assignee_ids = values.pop("assignee_ids", None) or []
+        if assignee_ids:  # fail before anything is created; checked again where they are written
+            await self.access.require(Action.UPDATE.value)
         if not contact or not (contact.get("contact_id") or contact.get("details")):
             raise legal_error(422, "contact_required", "Select an existing contact or provide a new one")
         for required in ("party_role", "title"):
@@ -271,17 +276,25 @@ class LegalProceedingService:
             "base_items": [{"subject": i["subject"], "amount": _audit_value(i["amount"])} for i in base_items],
             "had_open_proceeding": had_open,
         })
+        # Same transaction: a rejected assignment rolls back the proceeding too.
+        await LegalAssigneeService(self.db, self.user).assign_on_create(proceeding, assignee_ids)
         return CreateResult(proceeding, primary, has_match)
 
     # ── edit ─────────────────────────────────────────────────────────────────
 
     async def update(self, proceeding_id: int, values: dict) -> LegalProceeding:
-        """Claim details, title, project. The parties are not editable here."""
+        """Claim details, title, project and the assigned users. The parties are not
+        editable here. ``assignee_ids`` not sent: assignments untouched; sent: the
+        full set to keep (``[]`` removes everyone), in this same transaction."""
         changed = [f for f in IMMUTABLE_PARTY_FIELDS if f in values]
         if changed:
             raise legal_error(422, "contact_immutable", "The parties of a proceeding cannot be changed here",
                               fields=changed)
         proceeding = await self.access.load(proceeding_id, Action.UPDATE.value, for_update=True, require_open=True)
+        values = dict(values)
+        assignee_ids = values.pop("assignee_ids", None)
+        if assignee_ids is not None:
+            await LegalAssigneeService(self.db, self.user).replace(proceeding, assignee_ids)
         data = self._validated_fields(values)
         if "project_id" in values:
             data["project_id"] = await self._validate_project(values["project_id"])

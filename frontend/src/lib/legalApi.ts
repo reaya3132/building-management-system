@@ -110,6 +110,8 @@ export interface LegalProceedingCreateInput {
   claim_details?: string | null
   confirm_open_proceeding?: boolean
   confirm_duplicate_contact?: boolean
+  /** Users assigned besides the creator (the primary owner). Optional; needs the assigning permission. */
+  assignee_ids?: number[]
 }
 
 export interface LegalUserRef {
@@ -216,6 +218,25 @@ export interface LegalProjectOption {
   id: number
   name: string
   parent_name: string | null
+}
+
+export interface LegalAssignee {
+  user: LegalUserRef
+  assigned_by: LegalUserRef | null
+  assigned_at: string
+}
+
+/** The creator (primary owner, never in ``assignees``) and the assigned users. */
+export interface LegalTeam {
+  owner: LegalUserRef | null
+  assignees: LegalAssignee[]
+}
+
+/** Outcome of {@link LegalAPI.saveAssignees}: who was added and removed, and the server's team afterwards. */
+export interface SaveAssigneesResult {
+  added: number[]
+  removed: number[]
+  team: LegalTeam
 }
 
 export const LegalAPI = {
@@ -343,6 +364,35 @@ export const LegalAPI = {
 
   async deleteDocument(id: number, documentId: number): Promise<void> {
     await api.delete(`${BASE}/proceedings/${id}/documents/${documentId}`)
+  },
+
+  // ── team (primary owner + assigned users) ──────────────────────────────────
+
+  async team(id: number): Promise<LegalTeam> {
+    const { data } = await api.get<LegalTeam>(`${BASE}/proceedings/${id}/team`)
+    return data
+  },
+
+  /**
+   * Replaces the proceeding's assigned users with exactly ``userIds`` (``[]``
+   * removes everyone) — the collection pattern: the full set in one ``PATCH``,
+   * all or nothing. Independent of any screen, so a proceeding edit form can use
+   * it, or send ``assignee_ids`` within its own update. The server checks the
+   * users and the permission and writes an audit entry per user added or removed.
+   * The creator is the primary owner and is never sent.
+   */
+  async saveAssignees(id: number, userIds: number[]): Promise<SaveAssigneesResult> {
+    const before = await LegalAPI.team(id)
+    const wanted = [...new Set(userIds)].filter((userId) => userId !== before.owner?.id)
+    await api.patch(`${BASE}/proceedings/${id}`, { assignee_ids: wanted })
+    const team = await LegalAPI.team(id)
+    const beforeIds = new Set(before.assignees.map((a) => a.user.id))
+    const afterIds = new Set(team.assignees.map((a) => a.user.id))
+    return {
+      added: [...afterIds].filter((userId) => !beforeIds.has(userId)),
+      removed: [...beforeIds].filter((userId) => !afterIds.has(userId)),
+      team,
+    }
   },
 
   async searchContacts(search: string): Promise<ContactSummary[]> {

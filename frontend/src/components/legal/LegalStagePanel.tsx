@@ -29,7 +29,7 @@ function DocState({ documented }: { documented: boolean }) {
   )
 }
 
-/** One of the five fixed stages: its status actions, its fixed components, and the records added to it. */
+/** One of the fixed stages: its status actions, its fixed components, and the records added to it. */
 export default function LegalStagePanel({ proceeding, stage, documents, canChange, onDetail, onDocumentsChanged }: Props) {
   const id = proceeding.id
   const [entries, setEntries] = useState<LegalEntry[]>([])
@@ -112,7 +112,7 @@ export default function LegalStagePanel({ proceeding, stage, documents, canChang
 
   const tabs: Array<[Tab, string]> = [
     ['documentation', stage.requires_communication ? `תיעוד שליחה (${communications.length})` : `רכיבי תיעוד (${stage.components.length})`],
-    ['notes', `הערות לשלב ${stage.position} (${stageNotes.length})`],
+    ['notes', `הערות לשלב ${stage.position}`],
   ]
 
   return (
