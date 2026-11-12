@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowRight, ChevronDown, Lock, LockOpen, Pencil } from 'lucide-react'
-import api from '../lib/api'
+import api, { avatarUrl } from '../lib/api'
 import { cn } from '../lib/utils'
-import { LegalAPI, type ContactSummary, type LegalDocument, type LegalEntry, type LegalProceedingDetail, type LegalTeam } from '../lib/legalApi'
+import { LegalAPI, type ContactSummary, type LegalDocument, type LegalEntry, type LegalProceedingDetail, type LegalTeam, type LegalUserRef } from '../lib/legalApi'
 import SearchableMultiSelect, { type ComboOption } from '../components/task-management/SearchableMultiSelect'
 import { formatILS } from '../components/collection/collectionUtils'
 import { ErrorBanner } from '../components/collection/CollectionModal'
@@ -33,14 +33,27 @@ function Party({ title, contact }: { title: string; contact: ContactSummary }) {
 
 interface UserOption { id: number; full_name: string }
 
+/** A user's photo, or a circle with the first letter of the name (the task window's assignee chip). */
+function UserChip({ user }: { user: LegalUserRef }) {
+  const src = avatarUrl(user.avatar_url)
+  return (
+    <span className="inline-flex items-center gap-1">
+      {src
+        ? <img src={src} alt="" className="w-6 h-6 rounded-full object-cover" />
+        : <span aria-hidden className="w-6 h-6 rounded-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center text-xs">{(user.full_name || '?').charAt(0)}</span>}
+      <span className="font-medium text-gray-900 dark:text-white">{user.full_name}</span>
+    </span>
+  )
+}
+
 /**
- * The proceeding's team: the creator as primary owner and the assigned users.
+ * The assigned users, in one line under the proceeding's title ("מוקצה למשתמש:").
  * Editing follows the collection EditForm pattern (view -> edit -> save / cancel)
  * with the shared SearchableMultiSelect; saving goes through LegalAPI.saveAssignees
  * (the full set in one PATCH, all or nothing), which a future proceeding edit form
  * can call the same way.
  */
-function TeamSection({ proceedingId, canAssign }: { proceedingId: number; canAssign: boolean }) {
+function AssigneesLine({ proceedingId, canAssign }: { proceedingId: number; canAssign: boolean }) {
   const [team, setTeam] = useState<LegalTeam | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
@@ -93,25 +106,24 @@ function TeamSection({ proceedingId, canAssign }: { proceedingId: number; canAss
     .map((u) => ({ id: u.id, label: u.full_name }))
 
   return (
-    <section aria-label="צוות ההליך" className={cn(CARD, 'px-4 py-3 space-y-2.5')}>
-      <div className="flex items-center justify-between gap-2">
-        <h2 className={CARD_TITLE}>צוות ההליך</h2>
+    <div role="group" aria-label="מוקצה למשתמש" className="space-y-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+        <span className="text-gray-600 dark:text-gray-400">מוקצה למשתמש:</span>
+        {!team && !loadError && <span className="text-gray-500">טוען...</span>}
+        {team && team.assignees.length === 0 && <span className="text-gray-500 dark:text-gray-400">—</span>}
+        {team?.assignees.map((a) => <UserChip key={a.user.id} user={a.user} />)}
         {canAssign && team && !editing && (
-          <button type="button" className={BUTTON_SECONDARY} onClick={() => void startEditing()}>
-            <Pencil className="w-4 h-4" /> עריכת שיוכים
+          <button type="button" aria-label="עריכת שיוכים" title="עריכת שיוכים" onClick={() => void startEditing()}
+            className="p-1 rounded text-gray-400 hover:text-primary hover:bg-primary/10">
+            <Pencil className="w-3.5 h-3.5" />
           </button>
         )}
       </div>
       <ErrorBanner message={loadError} />
-      {!team && !loadError && <p className="text-sm text-gray-500">טוען...</p>}
       {team && (
         <>
-          <div>
-            <div className="text-xs text-gray-500 dark:text-gray-400">אחראי ראשי</div>
-            <div className="text-sm font-medium text-gray-900 dark:text-white">{team.owner?.full_name ?? '—'}</div>
-          </div>
-          {editing ? (
-            <div className="space-y-2">
+          {editing && (
+            <div className="space-y-2 max-w-md">
               <SearchableMultiSelect label="משתמשים משויכים" options={options} selectedIds={selected} onChange={setSelected}
                 placeholder={usersLoading ? 'טוען משתמשים...' : 'בחר משתמשים...'} emptyText="אין משתמשים זמינים" />
               <div className="flex gap-2">
@@ -120,24 +132,6 @@ function TeamSection({ proceedingId, canAssign }: { proceedingId: number; canAss
                 </button>
                 <button type="button" className={BUTTON_SECONDARY} disabled={saving} onClick={() => { setEditing(false); setOutcome(null) }}>ביטול</button>
               </div>
-            </div>
-          ) : (
-            <div>
-              <div className="text-xs text-gray-500 dark:text-gray-400">משתמשים משויכים</div>
-              {team.assignees.length === 0 ? (
-                <p className="text-sm text-gray-500 dark:text-gray-400">אין משתמשים משויכים.</p>
-              ) : (
-                <ul className="space-y-0.5">
-                  {team.assignees.map((a) => (
-                    <li key={a.user.id} className="text-sm text-gray-900 dark:text-white">
-                      {a.user.full_name}
-                      <span className="text-xs text-gray-500 dark:text-gray-400">
-                        {' · '}{a.assigned_by ? `שויך ע"י ${a.assigned_by.full_name} · ` : ''}{formatDate(a.assigned_at)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
             </div>
           )}
           {outcome && (
@@ -152,7 +146,7 @@ function TeamSection({ proceedingId, canAssign }: { proceedingId: number; canAss
           )}
         </>
       )}
-    </section>
+    </div>
   )
 }
 
@@ -239,6 +233,8 @@ export default function LegalProceedingPage() {
             <h1 className="text-lg font-semibold text-gray-900 dark:text-white">{detail.title}</h1>
             <span className={`rounded-full border px-2 py-0.5 text-xs ${STATUS_BADGE[detail.status]}`}>{STATUS_LABELS[detail.status]}</span>
           </div>
+          {/* Assigning needs the proceeding open; the server checks the same (creator / Admin + update). */}
+          <AssigneesLine proceedingId={detail.id} canAssign={detail.permissions.can_assign && isOpen} />
           <p className="text-xs text-gray-500 dark:text-gray-400">
             הליך #{detail.id} · {PARTY_ROLE_LABELS[detail.party_role]} · נפתח {formatDate(detail.opened_at)}
             {detail.project && ` · ${detail.project.name}`}
@@ -259,15 +255,12 @@ export default function LegalProceedingPage() {
       </header>
       <ErrorBanner message={actionError} />
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <section aria-label="צדדים" className={cn(CARD, 'px-4 py-3 space-y-2.5')}>
           <Party title={PARTY_ROLE_LABELS[detail.party_role]} contact={detail.contact} />
           {detail.linked_landlord && <Party title="בעל הדירה המשויך" contact={detail.linked_landlord} />}
           {detail.claim_details && <p className="text-xs text-gray-600 dark:text-gray-300 whitespace-pre-wrap">{detail.claim_details}</p>}
         </section>
-
-        {/* Assigning needs the proceeding open; the server checks the same (creator / Admin + update). */}
-        <TeamSection proceedingId={detail.id} canAssign={detail.permissions.can_assign && isOpen} />
 
         <section aria-label="כרטסת" className={cn(CARD, 'px-4 py-3')}>
           <div className="flex items-center justify-between gap-3">

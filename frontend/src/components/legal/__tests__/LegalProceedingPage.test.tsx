@@ -13,7 +13,7 @@ vi.mock('../../../lib/legalApi', () => ({
     team: vi.fn(), saveAssignees: vi.fn(),
   },
 }))
-vi.mock('../../../lib/api', () => ({ default: { get: vi.fn() } }))
+vi.mock('../../../lib/api', () => ({ default: { get: vi.fn() }, avatarUrl: (p: string | null | undefined) => p ?? null }))
 vi.mock('../../../lib/collectionApi', () => ({ CollectionAPI: { projectOptions: vi.fn() } }))
 
 import { LegalAPI } from '../../../lib/legalApi'
@@ -87,17 +87,35 @@ describe('LegalProceedingPage', () => {
     ;(httpApi.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: USERS })
   })
 
-  describe('team', () => {
-    const teamCard = () => screen.findByRole('region', { name: 'צוות ההליך' })
+  describe('assigned users', () => {
+    const teamCard = () => screen.findByRole('group', { name: 'מוקצה למשתמש' })
 
-    it('shows the creator as primary owner and the assigned users', async () => {
+    it('shows one assigned user in one line under the title, with an initial and no assignment details', async () => {
       renderPage()
-      const card = await teamCard()
-      expect(await within(card).findByText('מנהלת ראשית')).toBeInTheDocument()
-      expect(within(card).getByText('אחראי ראשי')).toBeInTheDocument()
-      expect(within(card).getByText('משה לוי')).toBeInTheDocument()
-      expect(within(card).getByText(/שויך ע"י מנהלת ראשית/)).toBeInTheDocument()
+      const header = (await screen.findByRole('heading', { name: 'חוב ועד בית' })).closest('header')
+      const line = await teamCard()
+      expect(header).toContainElement(line)                                      // inside the header, no card of its own
+      expect(within(line).getByText('מוקצה למשתמש:')).toBeInTheDocument()
+      expect(await within(line).findByText('משה לוי')).toBeInTheDocument()
+      expect(within(line).getByText('מ')).toBeInTheDocument()                    // first letter in a circle
+      expect(within(line).queryByText(/שויך ע"י|מנהלת ראשית/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'צוות ההליך' })).not.toBeInTheDocument()
       expect(api.team).toHaveBeenCalledWith(7)
+    })
+
+    it('shows several assigned users side by side, and a dash when there are none', async () => {
+      api.team.mockResolvedValue({ ...TEAM, assignees: [
+        ...TEAM.assignees, { user: { id: 4, full_name: 'רות כץ' }, assigned_by: TEAM.owner, assigned_at: '2026-11-12T00:00:00Z' }] })
+      const { unmount } = renderPage()
+      const line = await teamCard()
+      expect(await within(line).findByText('רות כץ')).toBeInTheDocument()
+      expect(within(line).getByText('משה לוי')).toBeInTheDocument()
+      expect(within(line).getByText('ר')).toBeInTheDocument()
+      unmount()
+
+      api.team.mockResolvedValue({ ...TEAM, assignees: [] })
+      renderPage()
+      expect(await within(await teamCard()).findByText('—')).toBeInTheDocument()
     })
 
     it('offers editing only with can_assign on an open proceeding', async () => {
