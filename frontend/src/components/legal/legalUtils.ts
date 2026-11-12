@@ -29,6 +29,9 @@ interface ApiErrorShape {
 }
 
 const CODE_MESSAGES: Record<string, string> = {
+  already_assigned: 'המשתמש כבר משויך להליך.',
+  user_not_assignable: 'המשתמש אינו קיים או אינו פעיל.',
+  creator_is_owner: 'יוצר ההליך הוא האחראי הראשי ואינו נדרש לשיוך.',
   contact_required: 'יש לבחור איש קשר או להזין פרטי איש קשר חדש.',
   landlord_required: 'בהליך מול שוכר יש לבחור בעל דירה.',
   contact_details_incomplete: 'חסרים פרטי חובה באיש הקשר.',

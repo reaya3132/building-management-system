@@ -245,6 +245,9 @@ class ProceedingCreate(_In):
     base_items: list[LedgerItemCreate] | None = None     # at least one (enforced by the service)
     claim_details: str | None = None
     project_id: int | None = None
+    # Users assigned besides the creator (the primary owner). Optional: none sent
+    # needs only ``write``; any sent needs the assigning rule (``update``).
+    assignee_ids: list[int] = []
 
 
 class ProceedingUpdate(_In):
@@ -252,11 +255,16 @@ class ProceedingUpdate(_In):
     title: str | None = Field(None, max_length=255)
     claim_details: str | None = None
     project_id: int | None = None
+    # The full set of assigned users (like collection's ``assignee_ids``): not sent
+    # = unchanged, ``[]`` = remove everyone. The creator is never in it.
+    assignee_ids: list[int] | None = None
 
     @model_validator(mode="after")
     def _not_empty(self):
         if not self.model_fields_set:
             raise ValueError("at least one field must be provided")
+        if "assignee_ids" in self.model_fields_set and self.assignee_ids is None:
+            raise ValueError("assignee_ids cannot be null; send [] to remove every assigned user")
         return self
 
 

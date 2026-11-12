@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowRight, ChevronDown, Lock, LockOpen } from 'lucide-react'
+import { ArrowRight, ChevronDown, Lock, LockOpen, Pencil } from 'lucide-react'
+import api, { avatarUrl } from '../lib/api'
 import { cn } from '../lib/utils'
-import { LegalAPI, type ContactSummary, type LegalDocument, type LegalEntry, type LegalProceedingDetail } from '../lib/legalApi'
+import { LegalAPI, type ContactSummary, type LegalDocument, type LegalEntry, type LegalProceedingDetail, type LegalTeam, type LegalUserRef } from '../lib/legalApi'
+import SearchableMultiSelect, { type ComboOption } from '../components/task-management/SearchableMultiSelect'
 import { formatILS } from '../components/collection/collectionUtils'
 import { ErrorBanner } from '../components/collection/CollectionModal'
 import LedgerItems from '../components/ledger/LedgerItems'
@@ -29,7 +31,126 @@ function Party({ title, contact }: { title: string; contact: ContactSummary }) {
   )
 }
 
-/** One proceeding: details, parties, ledger, the five fixed stages, and general documents and notes. */
+interface UserOption { id: number; full_name: string }
+
+/** A user's photo, or a circle with the first letter of the name (the task window's assignee chip). */
+function UserChip({ user }: { user: LegalUserRef }) {
+  const src = avatarUrl(user.avatar_url)
+  return (
+    <span className="inline-flex items-center gap-1">
+      {src
+        ? <img src={src} alt="" className="w-6 h-6 rounded-full object-cover" />
+        : <span aria-hidden className="w-6 h-6 rounded-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center text-xs">{(user.full_name || '?').charAt(0)}</span>}
+      <span className="font-medium text-gray-900 dark:text-white">{user.full_name}</span>
+    </span>
+  )
+}
+
+/**
+ * The assigned users, in one line under the proceeding's title ("מוקצה למשתמש:").
+ * Editing follows the collection EditForm pattern (view -> edit -> save / cancel)
+ * with the shared SearchableMultiSelect; saving goes through LegalAPI.saveAssignees
+ * (the full set in one PATCH, all or nothing), which a future proceeding edit form
+ * can call the same way.
+ */
+function AssigneesLine({ proceedingId, canAssign }: { proceedingId: number; canAssign: boolean }) {
+  const [team, setTeam] = useState<LegalTeam | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [users, setUsers] = useState<UserOption[]>([])
+  const [usersLoading, setUsersLoading] = useState(false)
+  const [selected, setSelected] = useState<number[]>([])
+  const [saving, setSaving] = useState(false)
+  const [outcome, setOutcome] = useState<{ done: string[]; failed: string[] } | null>(null)
+
+  const loadTeam = useCallback(async () => {
+    try { setTeam(await LegalAPI.team(proceedingId)); setLoadError(null) }
+    catch (e) { setLoadError(legalErrorMessage(e, 'טעינת צוות ההליך נכשלה.')) }
+  }, [proceedingId])
+  useEffect(() => { void loadTeam() }, [loadTeam])
+
+  const startEditing = async () => {
+    if (!team) return
+    setOutcome(null)
+    setSelected(team.assignees.map((a) => a.user.id))
+    setEditing(true)
+    if (users.length) return
+    setUsersLoading(true)
+    try { setUsers((await api.get<UserOption[]>('/users/for-tasks')).data) }
+    catch (e) { setLoadError(legalErrorMessage(e, 'טעינת רשימת המשתמשים נכשלה.')) }
+    finally { setUsersLoading(false) }
+  }
+
+  const save = async () => {
+    if (!team) return
+    setSaving(true)
+    const nameOf = (id: number) => users.find((u) => u.id === id)?.full_name
+      ?? team.assignees.find((a) => a.user.id === id)?.user.full_name ?? `משתמש ${id}`
+    try {
+      const result = await LegalAPI.saveAssignees(proceedingId, selected)
+      setTeam(result.team)
+      const done = [...result.added.map((id) => `${nameOf(id)} שויך להליך`), ...result.removed.map((id) => `${nameOf(id)} הוסר מההליך`)]
+      setEditing(false)
+      setOutcome(done.length ? { done, failed: [] } : null)
+    } catch (e) {
+      // All or nothing: the server saved none of the changes. Show the error and what it holds.
+      setOutcome({ done: [], failed: [`השיוכים לא נשמרו: ${legalErrorMessage(e, 'שמירת השיוכים נכשלה.')}`] })
+      await loadTeam()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const options: ComboOption[] = users
+    .filter((u) => u.id !== team?.owner?.id)
+    .map((u) => ({ id: u.id, label: u.full_name }))
+
+  return (
+    <div role="group" aria-label="מוקצה למשתמש" className="space-y-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+        <span className="text-gray-600 dark:text-gray-400">מוקצה למשתמש:</span>
+        {!team && !loadError && <span className="text-gray-500">טוען...</span>}
+        {team && team.assignees.length === 0 && <span className="text-gray-500 dark:text-gray-400">—</span>}
+        {team?.assignees.map((a) => <UserChip key={a.user.id} user={a.user} />)}
+        {canAssign && team && !editing && (
+          <button type="button" aria-label="עריכת שיוכים" title="עריכת שיוכים" onClick={() => void startEditing()}
+            className="p-1 rounded text-gray-400 hover:text-primary hover:bg-primary/10">
+            <Pencil className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+      <ErrorBanner message={loadError} />
+      {team && (
+        <>
+          {editing && (
+            <div className="space-y-2 max-w-md">
+              <SearchableMultiSelect label="משתמשים משויכים" options={options} selectedIds={selected} onChange={setSelected}
+                placeholder={usersLoading ? 'טוען משתמשים...' : 'בחר משתמשים...'} emptyText="אין משתמשים זמינים" />
+              <div className="flex gap-2">
+                <button type="button" className={BUTTON_PRIMARY} disabled={saving || usersLoading} onClick={() => void save()}>
+                  {saving ? 'שומר...' : 'שמירה'}
+                </button>
+                <button type="button" className={BUTTON_SECONDARY} disabled={saving} onClick={() => { setEditing(false); setOutcome(null) }}>ביטול</button>
+              </div>
+            </div>
+          )}
+          {outcome && (
+            <div role="status" className="space-y-1 text-xs">
+              {outcome.done.length > 0 && (
+                <ul className="text-emerald-700 dark:text-emerald-400">{outcome.done.map((t) => <li key={t}>✓ {t}</li>)}</ul>
+              )}
+              {outcome.failed.length > 0 && (
+                <ul className="text-red-600 dark:text-red-400">{outcome.failed.map((t) => <li key={t}>✗ {t}</li>)}</ul>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+/** One proceeding: details, parties, ledger, the fixed stages, and general documents and notes. */
 export default function LegalProceedingPage() {
   const proceedingId = Number(useParams().proceedingId)
   const [detail, setDetail] = useState<LegalProceedingDetail | null>(null)
@@ -112,6 +233,8 @@ export default function LegalProceedingPage() {
             <h1 className="text-lg font-semibold text-gray-900 dark:text-white">{detail.title}</h1>
             <span className={`rounded-full border px-2 py-0.5 text-xs ${STATUS_BADGE[detail.status]}`}>{STATUS_LABELS[detail.status]}</span>
           </div>
+          {/* Assigning needs the proceeding open; the server checks the same (creator / Admin + update). */}
+          <AssigneesLine proceedingId={detail.id} canAssign={detail.permissions.can_assign && isOpen} />
           <p className="text-xs text-gray-500 dark:text-gray-400">
             הליך #{detail.id} · {PARTY_ROLE_LABELS[detail.party_role]} · נפתח {formatDate(detail.opened_at)}
             {detail.project && ` · ${detail.project.name}`}

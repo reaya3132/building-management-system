@@ -10,12 +10,15 @@ vi.mock('../../../lib/legalApi', () => ({
     uploadEntryDocuments: vi.fn(), deleteEntryDocument: vi.fn(), uploadDocuments: vi.fn(), deleteDocument: vi.fn(),
     completeStage: vi.fn(), skipStage: vi.fn(), reopenStage: vi.fn(), close: vi.fn(), reopen: vi.fn(),
     addLedgerItem: vi.fn(), updateLedgerItem: vi.fn(), archiveLedgerItem: vi.fn(),
+    team: vi.fn(), saveAssignees: vi.fn(),
   },
 }))
+vi.mock('../../../lib/api', () => ({ default: { get: vi.fn() }, avatarUrl: (p: string | null | undefined) => p ?? null }))
 vi.mock('../../../lib/collectionApi', () => ({ CollectionAPI: { projectOptions: vi.fn() } }))
 
 import { LegalAPI } from '../../../lib/legalApi'
 import { CollectionAPI } from '../../../lib/collectionApi'
+import httpApi from '../../../lib/api'
 import LegalProceedingPage from '../../../pages/LegalProceedingPage'
 
 const api = LegalAPI as unknown as Record<keyof typeof LegalAPI, ReturnType<typeof vi.fn>>
@@ -46,6 +49,11 @@ const detail = {
 }
 const doc = (id: number, extra = {}) => ({ id, file_name: `קובץ ${id}.pdf`, download_url: `https://files/${id}`, uploaded_by: null, uploaded_at: null, stage_key: null, component_key: null, entry_id: null, ...extra })
 const entry = (id: number, extra = {}) => ({ id, entry_type: 'note', stage_key: null, context_key: null, content: `הערה ${id}`, channel: null, occurred_at: null, created_by: null, created_at: '2026-10-01T00:00:00Z', updated_at: null, can_modify: true, documents: [], ...extra })
+const TEAM = {
+  owner: { id: 1, full_name: 'מנהלת ראשית' },
+  assignees: [{ user: { id: 3, full_name: 'משה לוי' }, assigned_by: { id: 1, full_name: 'מנהלת ראשית' }, assigned_at: '2026-11-01T00:00:00Z' }],
+}
+const USERS = [{ id: 1, full_name: 'מנהלת ראשית' }, { id: 3, full_name: 'משה לוי' }, { id: 4, full_name: 'רות כץ' }, { id: 5, full_name: 'אבי פרץ' }]
 const apiError = (status: number, detailBody: unknown) => ({ response: { status, data: { detail: detailBody } } })
 
 function renderPage() {
@@ -54,7 +62,7 @@ function renderPage() {
     <Route path="/legal-proceedings" element={<div>רשימת ההליכים</div>} />
   </Routes></MemoryRouter>)
 }
-const stagesNav = () => screen.findByRole('navigation', { name: 'חמשת השלבים' })
+const stagesNav = () => screen.findByRole('navigation', { name: 'שלבי ההליך' })
 const openStage = async (name: RegExp) => userEvent.click(within(await stagesNav()).getByRole('button', { name }))
 
 describe('LegalProceedingPage', () => {
@@ -75,13 +83,104 @@ describe('LegalProceedingPage', () => {
             : [],
       next_before_id: null,
     }))
+    api.team.mockResolvedValue(TEAM)
+    ;(httpApi.get as ReturnType<typeof vi.fn>).mockResolvedValue({ data: USERS })
+  })
+
+  describe('assigned users', () => {
+    const teamCard = () => screen.findByRole('group', { name: 'מוקצה למשתמש' })
+
+    it('shows one assigned user in one line under the title, with an initial and no assignment details', async () => {
+      renderPage()
+      const header = (await screen.findByRole('heading', { name: 'חוב ועד בית' })).closest('header')
+      const line = await teamCard()
+      expect(header).toContainElement(line)                                      // inside the header, no card of its own
+      expect(within(line).getByText('מוקצה למשתמש:')).toBeInTheDocument()
+      expect(await within(line).findByText('משה לוי')).toBeInTheDocument()
+      expect(within(line).getByText('מ')).toBeInTheDocument()                    // first letter in a circle
+      expect(within(line).queryByText(/שויך ע"י|מנהלת ראשית/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'צוות ההליך' })).not.toBeInTheDocument()
+      expect(api.team).toHaveBeenCalledWith(7)
+    })
+
+    it('shows several assigned users side by side, and a dash when there are none', async () => {
+      api.team.mockResolvedValue({ ...TEAM, assignees: [
+        ...TEAM.assignees, { user: { id: 4, full_name: 'רות כץ' }, assigned_by: TEAM.owner, assigned_at: '2026-11-12T00:00:00Z' }] })
+      const { unmount } = renderPage()
+      const line = await teamCard()
+      expect(await within(line).findByText('רות כץ')).toBeInTheDocument()
+      expect(within(line).getByText('משה לוי')).toBeInTheDocument()
+      expect(within(line).getByText('ר')).toBeInTheDocument()
+      unmount()
+
+      api.team.mockResolvedValue({ ...TEAM, assignees: [] })
+      renderPage()
+      expect(await within(await teamCard()).findByText('—')).toBeInTheDocument()
+    })
+
+    it('offers editing only with can_assign on an open proceeding', async () => {
+      api.get.mockResolvedValue({ ...detail, permissions: { ...detail.permissions, can_assign: false } })
+      const { unmount } = renderPage()
+      const card = await teamCard()
+      await within(card).findByText('משה לוי')
+      expect(within(card).queryByRole('button', { name: /עריכת שיוכים/ })).not.toBeInTheDocument()
+      unmount()
+
+      api.get.mockResolvedValue({ ...detail, status: 'closed', closed_at: '2026-10-05T00:00:00Z', close_reason: 'שולם' })
+      renderPage()
+      const closed = await teamCard()
+      await within(closed).findByText('משה לוי')
+      expect(within(closed).queryByRole('button', { name: /עריכת שיוכים/ })).not.toBeInTheDocument()
+    })
+
+    it('saves the wanted set of users, without the creator in the choices, and shows what changed', async () => {
+      api.saveAssignees.mockResolvedValue({
+        added: [4], removed: [3],
+        team: { owner: TEAM.owner, assignees: [{ user: { id: 4, full_name: 'רות כץ' }, assigned_by: TEAM.owner, assigned_at: '2026-11-12T00:00:00Z' }] },
+      })
+      renderPage()
+      const card = await teamCard()
+      await userEvent.click(await within(card).findByRole('button', { name: /עריכת שיוכים/ }))
+      await userEvent.click(within(card).getByRole('button', { name: 'הסר משה לוי' }))
+      await userEvent.click(within(card).getByRole('textbox'))
+      expect(within(card).queryByRole('button', { name: 'מנהלת ראשית' })).not.toBeInTheDocument()  // the owner is not offered
+      await userEvent.click(within(card).getByRole('button', { name: 'רות כץ' }))
+      await userEvent.click(within(card).getByRole('button', { name: 'שמירה' }))
+
+      await waitFor(() => expect(api.saveAssignees).toHaveBeenCalledWith(7, [4]))
+      const status = await within(card).findByRole('status')
+      expect(status).toHaveTextContent('רות כץ שויך להליך')
+      expect(status).toHaveTextContent('משה לוי הוסר מההליך')
+      expect(within(card).getByRole('button', { name: /עריכת שיוכים/ })).toBeInTheDocument()  // back to the view
+    })
+
+    it('a rejected save changes nothing: it shows the reason, keeps editing open and re-reads the team', async () => {
+      api.saveAssignees.mockRejectedValue(apiError(422, { code: 'user_not_assignable', message: 'The user does not exist or is not active', user_id: 5 }))
+      renderPage()
+      const card = await teamCard()
+      await userEvent.click(await within(card).findByRole('button', { name: /עריכת שיוכים/ }))
+      await userEvent.click(within(card).getByRole('textbox'))
+      await userEvent.click(within(card).getByRole('button', { name: 'רות כץ' }))
+      await userEvent.click(within(card).getByRole('button', { name: 'אבי פרץ' }))
+      await userEvent.click(within(card).getByRole('button', { name: 'שמירה' }))
+
+      await waitFor(() => expect(api.saveAssignees).toHaveBeenCalledWith(7, [3, 4, 5]))
+      const status = await within(card).findByRole('status')
+      expect(status).toHaveTextContent('השיוכים לא נשמרו: המשתמש אינו קיים או אינו פעיל.')
+      expect(status).not.toHaveTextContent('שויך להליך')
+      expect(api.team).toHaveBeenCalledTimes(2)                                           // re-read after the failure
+      expect(within(card).getByRole('button', { name: 'שמירה' })).toBeInTheDocument()  // still editing, to retry
+      await userEvent.click(within(card).getByRole('button', { name: 'ביטול' }))
+      expect(within(card).getByText('משה לוי')).toBeInTheDocument()                     // the server's team, unchanged
+      expect(within(card).queryByText('רות כץ')).not.toBeInTheDocument()
+    })
   })
 
   const panelOf = (position: number, label: string) => screen.findByRole('region', { name: `שלב ${position}: ${label}` })
   const component = (panel: HTMLElement, name: string) => within(panel).getByRole('group', { name })
   const expand = async (group: HTMLElement) => userEvent.click(within(group).getByRole('button', { expanded: false }))
 
-  it('shows the header, compact parties and exactly the five fixed stages', async () => {
+  it('shows the header, compact parties and exactly the stages the server sends', async () => {
     renderPage()
     expect(await screen.findByRole('heading', { name: 'חוב ועד בית' })).toBeInTheDocument()
     expect(screen.getByText('0 מתוך 5 שלבים')).toBeInTheDocument()
@@ -129,7 +228,7 @@ describe('LegalProceedingPage', () => {
     expect(within(door).queryByText('קובץ 3.pdf')).not.toBeInTheDocument()               // an entry's file is not the component's
     expect(within(door).getByLabelText('העלאת קבצים: תיעוד הדבקה על הדלת')).toBeInTheDocument()
     expect(within(panel).queryByText('הערה לשלב השני')).not.toBeInTheDocument()          // stage notes are on their own tab
-    await userEvent.click(within(panel).getByRole('tab', { name: /הערות לשלב \d \(1\)/ }))
+    await userEvent.click(within(panel).getByRole('tab', { name: 'הערות לשלב 2' }))
     expect(within(panel).getByText('הערה לשלב השני')).toBeInTheDocument()
     expect(api.entries).toHaveBeenCalledWith(7, { stage_key: 'first_door_notice' })
   })

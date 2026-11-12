@@ -59,14 +59,20 @@ STAGES: tuple[StageDefinition, ...] = (
         requires_communication=True,
     ),
     StageDefinition(
+        key="tenants_committee_approval",
+        label="אישור נציגות דיירים",
+        description="קבלת אישור נציגות הדיירים להמשך ההליך",
+        components=(StageComponent("committee_approval", "אישור נציגות דיירים"),),
+    ),
+    StageDefinition(
         key="first_door_notice",
-        label="מכתב ראשון על הדלת",
+        label="מכתב התראה ראשון",
         description="הדבקת מכתב ראשון על דלת הדירה ושליחתו בערוצים נוספים.",
         components=_DOOR_NOTICE_COMPONENTS,
     ),
     StageDefinition(
         key="second_door_notice",
-        label="מכתב נוסף על הדלת",
+        label="מכתב התראה שני",
         description="הדבקת מכתב נוסף על דלת הדירה ושליחתו בערוצים נוספים.",
         components=_DOOR_NOTICE_COMPONENTS,
     ),

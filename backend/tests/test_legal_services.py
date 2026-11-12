@@ -21,7 +21,9 @@ from backend.core.security import hash_password
 from backend.iam.engine import PermissionsEngine
 from backend.models.audit_log import AuditLog
 from backend.models.document import Document
-from backend.models.legal_proceeding import LegalProceedingEntry, LegalProceedingStage
+from backend.models.legal_proceeding import (
+    LegalProceeding, LegalProceedingAssignee, LegalProceedingEntry, LegalProceedingStage,
+)
 from backend.models.project import Project
 from backend.models.user import User, UserRole
 from backend.repositories.legal_proceeding_repository import ProceedingFilters
@@ -84,8 +86,9 @@ async def grant(db, user, *actions):
 
 
 async def make_user(db, email, role=UserRole.MEMBER.value, **kw) -> User:
+    kw.setdefault("is_active", True)
     user = User(email=email, password_hash=hash_password("x"), full_name=email.split("@")[0], role=role,
-                is_active=True, email_verified=True, **kw)
+                email_verified=True, **kw)
     db.add(user)
     await db.commit()
     await db.refresh(user)
@@ -210,10 +213,14 @@ async def test_assignment_rules(team, test_db):
     with pytest.raises(HTTPException) as exc:
         await LegalAssigneeService(db, lawyer).assign(pid, helper.id)
     assert code_of(exc) == "already_assigned"
-    archived = await make_user(test_db, "gone@x.io", archived_at=WHEN)
+    # Archiving a user deactivates it (user_archive_service): the shared rule is "exists and active".
+    archived = await make_user(test_db, "gone@x.io", is_active=False, archived_at=WHEN)
     with pytest.raises(HTTPException) as exc:
         await LegalAssigneeService(db, lawyer).assign(pid, archived.id)
     assert code_of(exc) == "user_not_assignable"
+    with pytest.raises(HTTPException) as exc:
+        await LegalAssigneeService(db, lawyer).assign(pid, 99999)
+    assert code_of(exc) == "user_not_assignable" and exc.value.detail["user_id"] == 99999
 
     await LegalAssigneeService(db, admin).assign(pid, outsider.id)  # admin may assign
     await LegalAssigneeService(db, lawyer).unassign(pid, helper.id)
@@ -222,6 +229,119 @@ async def test_assignment_rules(team, test_db):
         await LegalProceedingService(db, helper).get(pid)  # no longer visible
     assert (await actions(db, pid)).count("assignee_added") == 2
     assert "assignee_removed" in await actions(db, pid)
+
+
+async def assigned_ids(db, proceeding_id) -> list[int]:
+    rows = (await db.execute(select(LegalProceedingAssignee.user_id)
+                             .where(LegalProceedingAssignee.proceeding_id == proceeding_id))).scalars().all()
+    return sorted(rows)
+
+
+async def rollback(db, *users) -> None:
+    """What a request does on an error; the acting users' rows are reloaded (they expire)."""
+    await db.rollback()
+    for user in users:
+        await db.refresh(user)
+
+
+async def test_create_without_assignees_needs_only_write(team, test_db):
+    writer = await make_user(test_db, "writer@x.io")
+    await grant(test_db, writer, "read", "write")
+    pid = (await open_proceeding(team["db"], writer)).proceeding.id
+    assert await assigned_ids(team["db"], pid) == []
+    pid2 = (await open_proceeding(team["db"], writer, assignee_ids=[])).proceeding.id  # [] = none
+    assert await assigned_ids(team["db"], pid2) == []
+    assert "assignee_added" not in await actions(team["db"], pid)
+
+
+async def test_create_with_assignees_in_one_transaction(team):
+    db, lawyer, helper, outsider = team["db"], team["lawyer"], team["helper"], team["outsider"]
+    pid = (await open_proceeding(db, lawyer, assignee_ids=[helper.id, outsider.id, helper.id])).proceeding.id
+    assert await assigned_ids(db, pid) == sorted([helper.id, outsider.id])
+    assert (await actions(db, pid)).count("assignee_added") == 2           # one audit entry per user
+    assert (await LegalProceedingService(db, helper).get(pid)).id == pid  # assignment grants visibility
+
+
+@pytest.mark.parametrize("bad", ["inactive", "creator", "no_update"])
+async def test_rejected_assignment_on_create_creates_nothing(team, test_db, bad):
+    db, lawyer, helper = team["db"], team["lawyer"], team["helper"]
+    creator, ids = lawyer, [helper.id]
+    if bad == "inactive":
+        ids = [helper.id, (await make_user(test_db, "off@x.io", is_active=False)).id]
+    elif bad == "creator":
+        ids = [lawyer.id]
+    else:  # write without update: may open a proceeding, may not assign
+        creator = await make_user(test_db, "writer2@x.io")
+        await grant(test_db, creator, "read", "write")
+    before = await db.scalar(select(func.count()).select_from(LegalProceeding))
+    with pytest.raises(HTTPException) as exc:
+        await open_proceeding(db, creator, assignee_ids=ids)
+    await db.rollback()  # what the request does on any error
+    if bad == "no_update":
+        assert exc.value.status_code == 403
+    else:
+        assert code_of(exc) == {"inactive": "user_not_assignable", "creator": "creator_is_owner"}[bad]
+    assert await db.scalar(select(func.count()).select_from(LegalProceeding)) == before
+    assert await db.scalar(select(func.count()).select_from(LegalProceedingAssignee)) == 0
+
+
+async def test_update_replaces_the_full_set(team):
+    db, lawyer, helper, outsider, admin = team["db"], team["lawyer"], team["helper"], team["outsider"], team["admin"]
+    pid = (await open_proceeding(db, lawyer, assignee_ids=[helper.id])).proceeding.id
+    service = LegalProceedingService(db, lawyer)
+
+    await service.update(pid, {"title": "שם חדש"})                       # not sent: untouched
+    await db.commit()
+    assert await assigned_ids(db, pid) == [helper.id]
+
+    await service.update(pid, {"assignee_ids": [outsider.id]})           # full set: replaced
+    await db.commit()
+    assert await assigned_ids(db, pid) == [outsider.id]
+    log = await actions(db, pid)
+    assert log.count("assignee_added") == 2 and log.count("assignee_removed") == 1
+
+    await service.update(pid, {"assignee_ids": []})                      # []: everyone removed
+    await db.commit()
+    assert await assigned_ids(db, pid) == []
+
+    await LegalProceedingService(db, admin).update(pid, {"assignee_ids": [helper.id, admin.id]})  # admin may
+    await db.commit()
+    assert await assigned_ids(db, pid) == sorted([helper.id, admin.id])
+
+    with pytest.raises(HTTPException) as exc:
+        await service.update(pid, {"assignee_ids": [lawyer.id]})
+    assert code_of(exc) == "creator_is_owner"
+    await db.rollback()
+
+
+async def test_update_assignees_keeps_the_assigning_rules(team):
+    db, lawyer, helper, outsider = team["db"], team["lawyer"], team["helper"], team["outsider"]
+    helper_id, outsider_id = helper.id, outsider.id  # rows expire on rollback
+    pid = (await open_proceeding(db, lawyer, assignee_ids=[helper_id])).proceeding.id
+    # an assignee with update may edit, may re-send the same set (ignored), may not change it
+    await LegalProceedingService(db, helper).update(pid, {"title": "עדכון", "assignee_ids": [helper_id]})
+    await db.commit()
+    with pytest.raises(HTTPException) as exc:
+        await LegalProceedingService(db, helper).update(pid, {"assignee_ids": [helper_id, outsider_id]})
+    assert exc.value.status_code == 403
+    await rollback(db, lawyer, helper)
+    assert await assigned_ids(db, pid) == [helper_id]
+    assert (await LegalProceedingService(db, lawyer).get(pid)).title == "עדכון"
+
+    # a rejected set rolls back the other fields of the same request
+    with pytest.raises(HTTPException):
+        await LegalProceedingService(db, lawyer).update(pid, {"title": "לא נשמר", "assignee_ids": [99999]})
+    await rollback(db, lawyer, helper)
+    assert (await LegalProceedingService(db, lawyer).get(pid)).title == "עדכון"
+
+    # closed: no assignment changes
+    await LegalProceedingService(db, lawyer).close(pid, "שולם")
+    await db.commit()
+    with pytest.raises(HTTPException) as exc:
+        await LegalProceedingService(db, lawyer).update(pid, {"assignee_ids": []})
+    assert code_of(exc) == "proceeding_closed"
+    await db.rollback()
+    assert await assigned_ids(db, pid) == [helper_id]
 
 
 # ── open / edit / close / reopen ──────────────────────────────────────────────
@@ -370,6 +490,36 @@ async def test_update_close_reopen(team):
 
 # ── stages ────────────────────────────────────────────────────────────────────
 
+async def test_tenants_committee_approval_is_an_ordinary_stage(team, storage):
+    """Stage 2: one component; several documents, notes and completion through the existing mechanism."""
+    db, lawyer = team["db"], team["lawyer"]
+    key = "tenants_committee_approval"
+    pid = (await open_proceeding(db, lawyer)).proceeding.id
+    svc = LegalStageService(db, lawyer)
+    with pytest.raises(HTTPException) as exc:
+        await svc.complete(pid, key)
+    assert code_of(exc) == "stage_requirements_missing"
+    assert exc.value.detail["missing"] == [{"key": "committee_approval", "label": "אישור נציגות דיירים"}]
+
+    docs = await LegalDocumentService(db, lawyer).upload_to_proceeding(
+        pid, [upload("approval.pdf"), upload("minutes.pdf")], stage_key=key, component_key="committee_approval")
+    await LegalEntryService(db, lawyer).create(pid, entry_type="note", stage_key=key, content="הנציגות אישרה")
+    await LegalEntryService(db, lawyer).create(pid, entry_type="note", stage_key=key,
+                                               context_key="committee_approval", content="נחתם בישיבה")
+    await db.commit()
+    assert len(docs) == 2 and len(storage.files) == 2
+    assert await svc.missing(pid, key) == []
+    assert len(await LegalEntryService(db, lawyer).list(pid, stage_key=key)) == 2
+
+    done = await svc.complete(pid, key)  # documented: no warning
+    await db.commit()
+    assert done.status == "completed"
+    items, _ = await LegalProceedingService(db, lawyer).list(ProceedingFilters())
+    assert len(items) == 1
+    progress = items[0].progress
+    assert (progress.resolved, progress.total, progress.next_stage_key) == (1, 6, STAGE1_KEY)
+
+
 async def test_stage_completion_warning_is_not_blocking(team):
     db, lawyer = team["db"], team["lawyer"]
     pid = (await open_proceeding(db, lawyer)).proceeding.id
@@ -426,7 +576,7 @@ async def test_skip_reopen_and_progress(team):
     items, _ = await LegalProceedingService(db, lawyer).list(ProceedingFilters())
     progress = items[0].progress
     assert (progress.resolved, progress.total, progress.percent, progress.next_stage_key) == (
-        2, 5, 40, "second_door_notice")
+        2, 6, 33, "tenants_committee_approval")
 
     reopened = await svc.reopen(pid, STAGE1_KEY, reason="נדרש תיעוד")
     await db.commit()

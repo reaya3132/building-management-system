@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSelector } from 'react-redux'
 import { AlertTriangle, Plus, Trash2 } from 'lucide-react'
+import type { RootState } from '../../store'
+import api from '../../lib/api'
 import { LegalAPI, type PartyRole } from '../../lib/legalApi'
 import { cn } from '../../lib/utils'
 import { FIELD_CLASS, parseMoneyInput } from '../collection/collectionUtils'
 import SearchableSelect from '../task-management/SearchableSelect'
-import type { ComboOption } from '../task-management/SearchableMultiSelect'
+import SearchableMultiSelect, { type ComboOption } from '../task-management/SearchableMultiSelect'
 import LegalModal, { BUTTON_PRIMARY, BUTTON_SECONDARY } from './LegalModal'
 import PartyPicker, { emptyParty, isPartyReady, missingFields, toPartySelection, type PartyValue } from './PartyPicker'
 import { PARTY_ROLE_LABELS, legalErrorCode, legalErrorMessage } from './legalUtils'
@@ -13,6 +16,8 @@ interface Props {
   isOpen: boolean
   onClose: () => void
   onCreated: () => void
+  /** The assigning permission (IAM ``update``): shows the optional assignees field. The server checks it again. */
+  canAssign?: boolean
 }
 
 interface BaseRow {
@@ -30,7 +35,11 @@ let nextRowKey = 1
 const newBaseRow = (subject = ''): BaseRow => ({ key: nextRowKey++, subject, amount: '' })
 
 /** Opens a proceeding. The server enforces every rule; warnings it raises are confirmed here. */
-export default function CreateLegalProceedingModal({ isOpen, onClose, onCreated }: Props) {
+export default function CreateLegalProceedingModal({ isOpen, onClose, onCreated, canAssign = false }: Props) {
+  const me = useSelector((s: RootState) => s.auth.me)
+  const [assigneeIds, setAssigneeIds] = useState<number[]>([])
+  const [users, setUsers] = useState<Array<{ id: number; full_name: string }>>([])
+  const [usersState, setUsersState] = useState<'loading' | 'error' | 'ready'>('loading')
   const [role, setRole] = useState<PartyRole>('tenant')
   const [contact, setContact] = useState<PartyValue>(emptyParty)
   const [landlord, setLandlord] = useState<PartyValue>(emptyParty)
@@ -62,8 +71,22 @@ export default function CreateLegalProceedingModal({ isOpen, onClose, onCreated 
     if (!isOpen) return
     setRole('tenant'); setContact(emptyParty()); setLandlord(emptyParty()); setTenantConfirmed(false); setTitle('')
     setProjectId(null); setBaseRows([newBaseRow()]); setDetails(''); setConfirmed({}); setPrompt(null); setError(null)
+    setAssigneeIds([])
     loadProjects()
   }, [isOpen, loadProjects])
+
+  // The same user list as collection and tasks; only for a user who may assign.
+  useEffect(() => {
+    if (!isOpen || !canAssign) return
+    let cancelled = false
+    setUsersState('loading')
+    api.get<Array<{ id: number; full_name: string }>>('/users/for-tasks')
+      .then((r) => { if (!cancelled) { setUsers(r.data); setUsersState('ready') } })
+      .catch(() => { if (!cancelled) { setUsers([]); setUsersState('error') } })
+    return () => { cancelled = true }
+  }, [isOpen, canAssign])
+  // The creator is the primary owner, never an assignee.
+  const userOptions: ComboOption[] = users.filter((u) => u.id !== me?.id).map((u) => ({ id: u.id, label: u.full_name }))
 
   const isTenant = role === 'tenant'
   // An existing tenant with every detail is ready at once; anything entered here is confirmed first.
@@ -128,6 +151,8 @@ export default function CreateLegalProceedingModal({ isOpen, onClose, onCreated 
         project_id: projectId,
         base_items: baseRows.map((row) => ({ subject: row.subject.trim(), amount: parseMoneyInput(row.amount)! })),
         claim_details: details.trim() || null,
+        // Sent only when chosen, so a create without assignees is the same request as before.
+        ...(canAssign && assigneeIds.length ? { assignee_ids: assigneeIds } : {}),
         ...flags,
       })
       onCreated()
@@ -225,6 +250,15 @@ export default function CreateLegalProceedingModal({ isOpen, onClose, onCreated 
         <label className="block text-xs text-gray-600 dark:text-gray-300">פרטי התביעה
           <textarea aria-label="פרטי התביעה" rows={3} value={details} onChange={(e) => setDetails(e.target.value)} className={cn(FIELD_CLASS, 'mt-1')} />
         </label>
+
+        {canAssign && (
+          <section aria-label="משתמשים משויכים" className="space-y-1">
+            <SearchableMultiSelect label="משתמשים משויכים" options={userOptions} selectedIds={assigneeIds} onChange={setAssigneeIds}
+              placeholder={usersState === 'loading' ? 'טוען משתמשים...' : 'בחר משתמשים (לא חובה)...'} emptyText="אין משתמשים זמינים" />
+            <p className="text-xs text-gray-500 dark:text-gray-400">יוצר ההליך מוגדר כאחראי הראשי.</p>
+            {usersState === 'error' && <p role="alert" className="text-xs text-red-600 dark:text-red-400">טעינת רשימת המשתמשים נכשלה.</p>}
+          </section>
+        )}
 
         {prompt && (
           <div role="alertdialog" aria-label="אישור המשך" className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20 px-3 py-2.5">

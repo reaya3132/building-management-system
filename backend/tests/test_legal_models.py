@@ -30,7 +30,8 @@ NOW = datetime(2026, 11, 1, 10, 0)
 
 def test_catalogue_order_and_components():
     assert catalogue.STAGE_KEYS == (
-        "collection_messages", "first_door_notice", "second_door_notice", "lawyer_warning", "supervisor_claim",
+        "collection_messages", "tenants_committee_approval", "first_door_notice", "second_door_notice",
+        "lawyer_warning", "supervisor_claim",
     )
     assert catalogue.STAGE1_KEY == catalogue.STAGES[0].key
     assert catalogue.STAGES[0].requires_communication and catalogue.STAGES[0].components == ()
@@ -42,14 +43,18 @@ def test_catalogue_order_and_components():
     )
     assert catalogue.get_stage("supervisor_claim").component_keys == ("claim_filing", "supervisor_decision")
     assert all(s.label for s in catalogue.STAGES)
-    assert catalogue.stage_position("lawyer_warning") == 4
+    assert catalogue.get_stage("tenants_committee_approval").component_keys == ("committee_approval",)
+    assert not catalogue.get_stage("tenants_committee_approval").requires_communication
+    assert catalogue.stage_position("tenants_committee_approval") == 2
+    assert catalogue.stage_position("lawyer_warning") == 5
 
 
-def test_the_five_fixed_stages_and_their_names():
+def test_the_six_fixed_stages_and_their_names():
     assert [(s.key, s.label) for s in catalogue.STAGES] == [
         ("collection_messages", "שליחת הודעות גבייה"),
-        ("first_door_notice", "מכתב ראשון על הדלת"),
-        ("second_door_notice", "מכתב נוסף על הדלת"),
+        ("tenants_committee_approval", "אישור נציגות דיירים"),
+        ("first_door_notice", "מכתב התראה ראשון"),
+        ("second_door_notice", "מכתב התראה שני"),
         ("lawyer_warning", 'מכתב התראה מעו"ד'),
         ("supervisor_claim", "תביעה מול המפקחת"),
     ]

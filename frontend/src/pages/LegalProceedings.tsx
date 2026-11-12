@@ -214,7 +214,7 @@ export default function LegalProceedings() {
         </nav>
       )}
 
-      <CreateLegalProceedingModal isOpen={creating} onClose={() => setCreating(false)} onCreated={() => { setCreating(false); reload() }} />
+      <CreateLegalProceedingModal isOpen={creating} canAssign={canUpdate} onClose={() => setCreating(false)} onCreated={() => { setCreating(false); reload() }} />
       <StatusActionModal action={statusAction} onClose={() => setStatusAction(null)} onDone={() => { setStatusAction(null); reload() }} />
     </div>
   )
