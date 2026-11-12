@@ -29,7 +29,7 @@ function DocState({ documented }: { documented: boolean }) {
   )
 }
 
-/** One of the five fixed stages: its status actions, its fixed components, and the records added to it. */
+/** One of the fixed stages: its status actions, its fixed components, and the records added to it. */
 export default function LegalStagePanel({ proceeding, stage, documents, canChange, onDetail, onDocumentsChanged }: Props) {
   const id = proceeding.id
   const [entries, setEntries] = useState<LegalEntry[]>([])

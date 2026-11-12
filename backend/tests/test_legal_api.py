@@ -101,7 +101,7 @@ async def test_stage_catalogue(test_client, lawyer):
     r = await test_client.get(f"{API}/stages", headers=auth(lawyer))
     assert r.status_code == 200
     stages = r.json()
-    assert [s["position"] for s in stages] == [1, 2, 3, 4, 5]
+    assert [s["position"] for s in stages] == [1, 2, 3, 4, 5, 6]
     assert stages[0]["requires_communication"] and stages[1]["components"]
 
 
@@ -109,7 +109,7 @@ async def test_open_get_list_update_close_reopen(test_client, lawyer):
     created = await open_proceeding(test_client, lawyer)
     p = created["proceeding"]
     assert p["status"] == "open" and p["total_amount"] == "1250.50" and p["contact"]["name"] == "ישראל ישראלי"
-    assert len(p["stages"]) == 5 and p["progress"] == {"resolved": 0, "total": 5, "percent": 0,
+    assert len(p["stages"]) == 6 and p["progress"] == {"resolved": 0, "total": 6, "percent": 0,
                                                        "next_stage_key": p["stages"][0]["key"]}
     assert p["permissions"] == {"can_update": True, "can_assign": True, "can_delete_others": False}
     assert p["opened_at"].endswith("Z") and created["has_match"] is False
@@ -164,6 +164,36 @@ async def test_permission_and_visibility_boundary(test_client, test_db, lawyer, 
                                    headers=auth(colleague))).status_code == 403
     r = await test_client.delete(f"{API}/proceedings/{pid}/assignees/{colleague.id}", headers=auth(lawyer))
     assert r.status_code == 200 and r.json()["assignees"] == []
+
+
+async def test_assignee_ids_on_create_and_patch(test_client, test_db, lawyer, colleague):
+    h = auth(lawyer)
+    team_of = lambda pid: test_client.get(f"{API}/proceedings/{pid}/team", headers=h)  # noqa: E731
+    ids = lambda r: [a["user"]["id"] for a in r.json()["assignees"]]  # noqa: E731
+
+    # create: without the field (existing clients), and with it
+    plain = (await open_proceeding(test_client, lawyer))["proceeding"]["id"]
+    assert ids(await team_of(plain)) == []
+    pid = (await open_proceeding(test_client, lawyer, assignee_ids=[colleague.id]))["proceeding"]["id"]
+    team = await team_of(pid)
+    assert team.json()["owner"]["id"] == lawyer.id and ids(team) == [colleague.id]
+
+    # write only: may open without assignees, may not assign
+    writer = await make_user(test_db, "writer@test.com", "read", "write")
+    await open_proceeding(test_client, writer)
+    body = {"party_role": "other", "title": "t", "base_items": BASE_ITEMS, "assignee_ids": [colleague.id],
+            "contact": {"details": {**NEW_CONTACT, "phone": "050-6543210"}}, "confirm_duplicate_contact": True}
+    assert (await test_client.post(f"{API}/proceedings", json=body, headers=auth(writer))).status_code == 403
+
+    # patch: not sent = unchanged, full set = replaced, [] = everyone removed, null = rejected
+    patch = lambda json: test_client.patch(f"{API}/proceedings/{pid}", json=json, headers=h)  # noqa: E731
+    assert (await patch({"title": "חדש"})).status_code == 200 and ids(await team_of(pid)) == [colleague.id]
+    third = await make_user(test_db, "third@test.com", "read")
+    assert (await patch({"assignee_ids": [third.id]})).status_code == 200 and ids(await team_of(pid)) == [third.id]
+    assert (await patch({"assignee_ids": []})).status_code == 200 and ids(await team_of(pid)) == []
+    assert (await patch({"assignee_ids": None})).status_code == 422
+    r = await patch({"assignee_ids": [lawyer.id]})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "creator_is_owner"
 
 
 async def test_contacts(test_client, lawyer):
@@ -400,6 +430,11 @@ COMMIT_FAILURES = {
     "update": lambda c, h, pid, other: c.patch(f"{API}/proceedings/{pid}", headers=h, json={"title": "changed"}),
     "close": lambda c, h, pid, other: c.post(f"{API}/proceedings/{pid}/close", headers=h, json={"reason": "r"}),
     "assign": lambda c, h, pid, other: c.post(f"{API}/proceedings/{pid}/assignees", headers=h, json={"user_id": other}),
+    "proceeding_with_assignees": lambda c, h, pid, other: c.post(f"{API}/proceedings", headers=h, json={
+        "party_role": "other", "base_items": BASE_ITEMS, "title": "t", "assignee_ids": [other],
+        "contact": {"details": {**NEW_CONTACT, "name": "לא יישמר", "phone": "050-7787788"}}}),
+    "replace_assignees": lambda c, h, pid, other: c.patch(f"{API}/proceedings/{pid}", headers=h,
+                                                          json={"title": "changed", "assignee_ids": [other]}),
     "note": lambda c, h, pid, other: c.post(f"{API}/proceedings/{pid}/entries", headers=h,
                                             data={"entry_type": "note", "content": "c"}),
 }

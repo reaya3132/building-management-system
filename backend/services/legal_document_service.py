@@ -2,7 +2,7 @@
 
 Where a document belongs:
 - general document of a proceeding   entity_type='legal_proceeding',       entity_id=proceeding, context_key NULL
-- a stage component (stages 2-5)     entity_type='legal_proceeding',       entity_id=proceeding,
+- a stage component (stages 2-6)     entity_type='legal_proceeding',       entity_id=proceeding,
                                      context_key="<stage_key>.<component_key>"
 - attached to an entry (note / communication)
                                      entity_type='legal_proceeding_entry', entity_id=entry

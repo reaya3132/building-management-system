@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowRight, ChevronDown, Lock, LockOpen } from 'lucide-react'
+import { ArrowRight, ChevronDown, Lock, LockOpen, Pencil } from 'lucide-react'
+import api from '../lib/api'
 import { cn } from '../lib/utils'
-import { LegalAPI, type ContactSummary, type LegalDocument, type LegalEntry, type LegalProceedingDetail } from '../lib/legalApi'
+import { LegalAPI, type ContactSummary, type LegalDocument, type LegalEntry, type LegalProceedingDetail, type LegalTeam } from '../lib/legalApi'
+import SearchableMultiSelect, { type ComboOption } from '../components/task-management/SearchableMultiSelect'
 import { formatILS } from '../components/collection/collectionUtils'
 import { ErrorBanner } from '../components/collection/CollectionModal'
 import LedgerItems from '../components/ledger/LedgerItems'
@@ -29,7 +31,132 @@ function Party({ title, contact }: { title: string; contact: ContactSummary }) {
   )
 }
 
-/** One proceeding: details, parties, ledger, the five fixed stages, and general documents and notes. */
+interface UserOption { id: number; full_name: string }
+
+/**
+ * The proceeding's team: the creator as primary owner and the assigned users.
+ * Editing follows the collection EditForm pattern (view -> edit -> save / cancel)
+ * with the shared SearchableMultiSelect; saving goes through LegalAPI.saveAssignees
+ * (the full set in one PATCH, all or nothing), which a future proceeding edit form
+ * can call the same way.
+ */
+function TeamSection({ proceedingId, canAssign }: { proceedingId: number; canAssign: boolean }) {
+  const [team, setTeam] = useState<LegalTeam | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [users, setUsers] = useState<UserOption[]>([])
+  const [usersLoading, setUsersLoading] = useState(false)
+  const [selected, setSelected] = useState<number[]>([])
+  const [saving, setSaving] = useState(false)
+  const [outcome, setOutcome] = useState<{ done: string[]; failed: string[] } | null>(null)
+
+  const loadTeam = useCallback(async () => {
+    try { setTeam(await LegalAPI.team(proceedingId)); setLoadError(null) }
+    catch (e) { setLoadError(legalErrorMessage(e, 'טעינת צוות ההליך נכשלה.')) }
+  }, [proceedingId])
+  useEffect(() => { void loadTeam() }, [loadTeam])
+
+  const startEditing = async () => {
+    if (!team) return
+    setOutcome(null)
+    setSelected(team.assignees.map((a) => a.user.id))
+    setEditing(true)
+    if (users.length) return
+    setUsersLoading(true)
+    try { setUsers((await api.get<UserOption[]>('/users/for-tasks')).data) }
+    catch (e) { setLoadError(legalErrorMessage(e, 'טעינת רשימת המשתמשים נכשלה.')) }
+    finally { setUsersLoading(false) }
+  }
+
+  const save = async () => {
+    if (!team) return
+    setSaving(true)
+    const nameOf = (id: number) => users.find((u) => u.id === id)?.full_name
+      ?? team.assignees.find((a) => a.user.id === id)?.user.full_name ?? `משתמש ${id}`
+    try {
+      const result = await LegalAPI.saveAssignees(proceedingId, selected)
+      setTeam(result.team)
+      const done = [...result.added.map((id) => `${nameOf(id)} שויך להליך`), ...result.removed.map((id) => `${nameOf(id)} הוסר מההליך`)]
+      setEditing(false)
+      setOutcome(done.length ? { done, failed: [] } : null)
+    } catch (e) {
+      // All or nothing: the server saved none of the changes. Show the error and what it holds.
+      setOutcome({ done: [], failed: [`השיוכים לא נשמרו: ${legalErrorMessage(e, 'שמירת השיוכים נכשלה.')}`] })
+      await loadTeam()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const options: ComboOption[] = users
+    .filter((u) => u.id !== team?.owner?.id)
+    .map((u) => ({ id: u.id, label: u.full_name }))
+
+  return (
+    <section aria-label="צוות ההליך" className={cn(CARD, 'px-4 py-3 space-y-2.5')}>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className={CARD_TITLE}>צוות ההליך</h2>
+        {canAssign && team && !editing && (
+          <button type="button" className={BUTTON_SECONDARY} onClick={() => void startEditing()}>
+            <Pencil className="w-4 h-4" /> עריכת שיוכים
+          </button>
+        )}
+      </div>
+      <ErrorBanner message={loadError} />
+      {!team && !loadError && <p className="text-sm text-gray-500">טוען...</p>}
+      {team && (
+        <>
+          <div>
+            <div className="text-xs text-gray-500 dark:text-gray-400">אחראי ראשי</div>
+            <div className="text-sm font-medium text-gray-900 dark:text-white">{team.owner?.full_name ?? '—'}</div>
+          </div>
+          {editing ? (
+            <div className="space-y-2">
+              <SearchableMultiSelect label="משתמשים משויכים" options={options} selectedIds={selected} onChange={setSelected}
+                placeholder={usersLoading ? 'טוען משתמשים...' : 'בחר משתמשים...'} emptyText="אין משתמשים זמינים" />
+              <div className="flex gap-2">
+                <button type="button" className={BUTTON_PRIMARY} disabled={saving || usersLoading} onClick={() => void save()}>
+                  {saving ? 'שומר...' : 'שמירה'}
+                </button>
+                <button type="button" className={BUTTON_SECONDARY} disabled={saving} onClick={() => { setEditing(false); setOutcome(null) }}>ביטול</button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">משתמשים משויכים</div>
+              {team.assignees.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">אין משתמשים משויכים.</p>
+              ) : (
+                <ul className="space-y-0.5">
+                  {team.assignees.map((a) => (
+                    <li key={a.user.id} className="text-sm text-gray-900 dark:text-white">
+                      {a.user.full_name}
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
+                        {' · '}{a.assigned_by ? `שויך ע"י ${a.assigned_by.full_name} · ` : ''}{formatDate(a.assigned_at)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {outcome && (
+            <div role="status" className="space-y-1 text-xs">
+              {outcome.done.length > 0 && (
+                <ul className="text-emerald-700 dark:text-emerald-400">{outcome.done.map((t) => <li key={t}>✓ {t}</li>)}</ul>
+              )}
+              {outcome.failed.length > 0 && (
+                <ul className="text-red-600 dark:text-red-400">{outcome.failed.map((t) => <li key={t}>✗ {t}</li>)}</ul>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+/** One proceeding: details, parties, ledger, the fixed stages, and general documents and notes. */
 export default function LegalProceedingPage() {
   const proceedingId = Number(useParams().proceedingId)
   const [detail, setDetail] = useState<LegalProceedingDetail | null>(null)
@@ -132,12 +259,15 @@ export default function LegalProceedingPage() {
       </header>
       <ErrorBanner message={actionError} />
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <section aria-label="צדדים" className={cn(CARD, 'px-4 py-3 space-y-2.5')}>
           <Party title={PARTY_ROLE_LABELS[detail.party_role]} contact={detail.contact} />
           {detail.linked_landlord && <Party title="בעל הדירה המשויך" contact={detail.linked_landlord} />}
           {detail.claim_details && <p className="text-xs text-gray-600 dark:text-gray-300 whitespace-pre-wrap">{detail.claim_details}</p>}
         </section>
+
+        {/* Assigning needs the proceeding open; the server checks the same (creator / Admin + update). */}
+        <TeamSection proceedingId={detail.id} canAssign={detail.permissions.can_assign && isOpen} />
 
         <section aria-label="כרטסת" className={cn(CARD, 'px-4 py-3')}>
           <div className="flex items-center justify-between gap-3">
