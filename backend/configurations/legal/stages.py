@@ -45,8 +45,8 @@ class StageDefinition:
 STAGE1_KEY = "collection_messages"
 
 _DOOR_NOTICE_COMPONENTS = (
-    StageComponent("door_placement", "תיעוד הדבקה על הדלת"),
     StageComponent("letter_file", "קובץ המכתב"),
+    StageComponent("door_placement", "תיעוד הדבקה על הדלת"),
     StageComponent("email_proof", "אסמכתת שליחה במייל"),
     StageComponent("whatsapp_proof", "אסמכתת שליחה בוואטסאפ"),
 )
