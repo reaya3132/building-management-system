@@ -52,22 +52,28 @@ class User(Base):
     )
 
     projects: Mapped[list["Project"]] = relationship(back_populates="manager")
+    # The user's activity lists below are NOT loaded with the user: every request
+    # loads the current user, and loading them pulled the user's whole task graph
+    # (tasks -> their users -> their lists ...) into every request. They stay the
+    # reverse side of the Task / message / notification relationships (kept in sync
+    # passively by back_populates). Query the tables directly, or load a list
+    # explicitly with selectinload(User.<list>); an implicit load raises.
     tasks: Mapped[list["Task"]] = relationship(
         "Task", back_populates="assigned_user",
-        foreign_keys="Task.assigned_to_user_id", lazy="selectin"
+        foreign_keys="Task.assigned_to_user_id", lazy="raise_on_sql"
     )
     # Reverse of Task.assignees (full co-owner assignee set). `secondary` is the
     # string table name to avoid an import cycle with the task module.
     assigned_tasks: Mapped[list["Task"]] = relationship(
-        "Task", secondary="task_assignees", back_populates="assignees", lazy="selectin"
+        "Task", secondary="task_assignees", back_populates="assignees", lazy="raise_on_sql"
     )
     task_participations: Mapped[list["TaskParticipant"]] = relationship(
-        "TaskParticipant", back_populates="user", lazy="selectin"
+        "TaskParticipant", back_populates="user", lazy="raise_on_sql"
     )
     task_messages: Mapped[list["TaskMessage"]] = relationship(
-        "TaskMessage", back_populates="user", lazy="selectin"
+        "TaskMessage", back_populates="user", lazy="raise_on_sql"
     )
     notifications: Mapped[list["UserNotification"]] = relationship(
         "UserNotification", back_populates="user", foreign_keys="UserNotification.user_id",
-        lazy="selectin"
+        lazy="raise_on_sql"
     )
