@@ -1,11 +1,22 @@
 """Repository for user notifications."""
 from datetime import datetime
-from sqlalchemy import select, func, update, or_
+from sqlalchemy import DateTime, String, Text, exists, insert, literal, select, func, update, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, joinedload, load_only, raiseload
 
 from backend.models.task import Task, TaskKind
+from backend.models.user import User
 from backend.models.user_notification import UserNotification, NotificationType
+
+
+def display_options():
+    """What a notification shows besides its own columns: the sender's name and the
+    task's title — joined in the same query, nothing else (no task assignees,
+    participants or labels, no user preferences)."""
+    return (
+        joinedload(UserNotification.from_user).options(load_only(User.full_name), raiseload("*")),
+        joinedload(UserNotification.task).options(load_only(Task.title), raiseload("*")),
+    )
 
 
 def _task_kind_clause(task_kind: str):
@@ -40,10 +51,7 @@ class NotificationRepository:
     ) -> list[UserNotification]:
         q = (
             select(UserNotification)
-            .options(
-                selectinload(UserNotification.from_user),
-                selectinload(UserNotification.task),
-            )
+            .options(*display_options())
             .where(UserNotification.user_id == user_id)
             .where(_task_kind_clause(task_kind))
         )
@@ -72,13 +80,57 @@ class NotificationRepository:
         )
         return result.scalar_one_or_none()
 
+    async def create_archived(
+        self,
+        recipient_ids: set[int],
+        *,
+        task_id: int,
+        from_user_id: int,
+        title: str,
+        body: str,
+        archived_at: datetime,
+    ) -> None:
+        """One task_archived notification per recipient, in a single INSERT ... SELECT.
+
+        created_at is the task's archived_at as stored. NOT EXISTS skips a recipient
+        who already has a task_archived notification for this archiving (same task,
+        created at or after archived_at) — a second guard; the conditional archive
+        UPDATE is what lets only one request get here. Users that no longer exist
+        are skipped by the select from users.
+        """
+        if not recipient_ids:
+            return
+        existing = aliased(UserNotification)
+        rows = (
+            select(
+                User.id,
+                literal(from_user_id),
+                literal(task_id),
+                literal(NotificationType.TASK_ARCHIVED, String),
+                literal(title, String),
+                literal(body, Text),
+                literal(archived_at, DateTime),
+            )
+            .where(
+                User.id.in_(recipient_ids),
+                ~exists().where(
+                    existing.user_id == User.id,
+                    existing.task_id == task_id,
+                    existing.type == NotificationType.TASK_ARCHIVED,
+                    existing.created_at >= archived_at,
+                ),
+            )
+        )
+        await self.db.execute(
+            insert(UserNotification).from_select(
+                ["user_id", "from_user_id", "task_id", "type", "title", "body", "created_at"], rows
+            )
+        )
+
     async def get_by_id(self, notification_id: int, user_id: int) -> UserNotification | None:
         result = await self.db.execute(
             select(UserNotification)
-            .options(
-                selectinload(UserNotification.from_user),
-                selectinload(UserNotification.task),
-            )
+            .options(*display_options())
             .where(
                 UserNotification.id == notification_id,
                 UserNotification.user_id == user_id,
@@ -136,14 +188,16 @@ class NotificationRepository:
         )
         await self.db.flush()
 
+    # Only read_at is refreshed: a full refresh expires the sender / task already
+    # loaded for display, which then cannot (and need not) be loaded again.
     async def mark_read(self, notification: UserNotification) -> UserNotification:
         notification.read_at = datetime.utcnow()
         await self.db.flush()
-        await self.db.refresh(notification)
+        await self.db.refresh(notification, ["read_at"])
         return notification
 
     async def mark_unread(self, notification: UserNotification) -> UserNotification:
         notification.read_at = None
         await self.db.flush()
-        await self.db.refresh(notification)
+        await self.db.refresh(notification, ["read_at"])
         return notification

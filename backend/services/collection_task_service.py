@@ -38,6 +38,8 @@ from backend.models.user import User
 from backend.models.user_notification import NotificationType, UserNotification
 from backend.repositories.collection_task_repository import CollectionTaskRepository
 from backend.repositories.notification_repository import NotificationRepository
+from backend.repositories.task_repository import TaskRepository
+from backend.services.notification_service import create_task_archived_notifications
 from backend.schemas.collection_task import (
     AdjustmentCreate,
     CollectionTaskCreate,
@@ -327,9 +329,19 @@ class CollectionTaskService:
             task = await self.get_task(task_id)
         if task.is_archived == archived:
             return
-        task.is_archived = archived
-        task.archived_at = _now() if archived else None
-        await self._log(task.id, CollectionEvent.ARCHIVED if archived else CollectionEvent.UNARCHIVED)
+        if archived:
+            # Conditional, like the regular archive: only the request that actually
+            # archives logs it and notifies; a concurrent one is a no-op as before.
+            archived_at = await TaskRepository(self.db).archive_if_active(task.id, TaskKind.COLLECTION)
+            if archived_at is None:
+                return
+            await self.db.refresh(task, ["is_archived", "archived_at"])
+            await self._log(task.id, CollectionEvent.ARCHIVED)
+            await create_task_archived_notifications(self.db, task, self.user, archived_at)
+        else:
+            task.is_archived = False
+            task.archived_at = None
+            await self._log(task.id, CollectionEvent.UNARCHIVED)
         await self.db.flush()
 
     # ── amounts ──────────────────────────────────────────────────────────────
