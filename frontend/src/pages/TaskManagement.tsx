@@ -1,24 +1,22 @@
 import { useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Navigate, useSearchParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ClipboardList, Calendar, ListTodo, Bell, LayoutGrid, Archive } from 'lucide-react'
+import { ClipboardList, Calendar, ListTodo, LayoutGrid, Archive } from 'lucide-react'
 import { cn } from '../lib/utils'
 import TaskBoard from '../components/task-management/TaskBoard'
 import TaskCalendar from './TaskCalendar'
 import TaskList from '../components/task-management/TaskList'
-import Notifications from './Notifications'
 import ArchivedTasksList from '../components/task-management/ArchivedTasksList'
 import SuperTasksPanel from '../components/task-management/SuperTasksPanel'
 import BacklogTab from '../components/task-management/BacklogTab'
 
-type TabId = 'board' | 'calendar' | 'tasks' | 'backlog' | 'messages' | 'archive'
+type TabId = 'board' | 'calendar' | 'tasks' | 'backlog' | 'archive'
 
 const TABS: { id: TabId; label: string; icon: typeof LayoutGrid }[] = [
   { id: 'board', label: 'לוח', icon: LayoutGrid },
   { id: 'calendar', label: 'יומן', icon: Calendar },
   { id: 'tasks', label: 'משימות', icon: ListTodo },
   { id: 'backlog', label: 'Backlog', icon: ListTodo },
-  { id: 'messages', label: 'הודעות', icon: Bell },
   { id: 'archive', label: 'ארכיון', icon: Archive },
 ]
 
@@ -34,6 +32,9 @@ export default function TaskManagement() {
     }
   }, [tabParam])
 
+  // The messages tab became the notification center: old links land there.
+  if ((tabParam as string | null) === 'messages') return <Navigate to="/notifications" replace />
+
   return (
     <div className="task-management-page min-h-screen bg-[#f0f4f8] dark:bg-[#0f1419]" dir="rtl">
       <div className="max-w-[1680px] mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
@@ -47,7 +48,7 @@ export default function TaskManagement() {
               ניהול משימות
             </h1>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-              לוח, יומן, משימות והודעות במקום אחד
+              לוח, יומן ומשימות במקום אחד
             </p>
           </div>
         </header>
@@ -124,17 +125,6 @@ export default function TaskManagement() {
                 transition={{ duration: 0.2 }}
               >
                 <BacklogTab />
-              </motion.div>
-            )}
-            {activeTab === 'messages' && (
-              <motion.div
-                key="messages"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.2 }}
-              >
-                <Notifications embedded />
               </motion.div>
             )}
             {activeTab === 'archive' && (

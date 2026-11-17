@@ -141,6 +141,16 @@ def create_app() -> FastAPI:
         if settings.is_production:
             raise SystemExit(f"SECURITY ERROR: {e}")
 
+    # The notification center's start: required in production / on Render. Missing
+    # there, the server does not start (the previous deploy keeps serving) instead of
+    # showing every old notification.
+    try:
+        settings.validate_notification_center()
+    except ValueError as e:
+        import logging
+        logging.getLogger(__name__).critical("Configuration error: %s", e)
+        raise SystemExit(f"CONFIGURATION ERROR: {e}")
+
     app = FastAPI(
         title="BMS Backend",
         version="1.0.0",

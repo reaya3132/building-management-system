@@ -1,24 +1,46 @@
+import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Bell } from 'lucide-react'
 import { cn } from '../lib/utils'
 import NotificationList from '../components/notification-center/NotificationList'
+import NotificationSummary from '../components/notification-center/NotificationSummary'
+import NotificationListItem from '../components/notification-center/NotificationListItem'
 import {
   CENTER_VIEWS, useNotificationCenter, type CenterView,
 } from '../components/notification-center/useNotificationCenter'
 
 const VIEW_LABELS: Record<CenterView, string> = { unread: 'לא נקראו', read: 'נקראו', all: 'הכול' }
+export const HIGHLIGHT_MS = 4000
 
 /**
  * מרכז העדכונים: one chronological list (three views) and the selected
- * notification's details. Stage 3e-2a: the list, views, loading, selection and
- * read / unread; the details panel itself comes in 3e-2b.
+ * notification's details: a summary from the notification itself, and the task's
+ * full content (the existing panels) only on "הצגת ההודעה".
  */
 export default function NotificationCenter() {
   const [params, setParams] = useSearchParams()
   const requested = params.get('view') as CenterView | null
   const view: CenterView = requested && CENTER_VIEWS.includes(requested) ? requested : 'unread'
   const center = useNotificationCenter(view)
-  const { selected } = center
+  const { selected, focus, highlightedId, clearHighlight } = center
+
+  // ?id= (from a toast): once the list is loaded, highlight that notification and
+  // bring it into view — it is neither selected nor marked read; clicking it is.
+  const focusId = Number(params.get('id')) || null
+  useEffect(() => {
+    if (focusId == null || center.loading) return
+    void focus(focusId)
+    const p = new URLSearchParams(params)
+    p.delete('id')                                       // handled; a later toast sets it again
+    setParams(p, { replace: true })
+  }, [focusId, center.loading]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (highlightedId == null) return
+    document.querySelector(`[data-notification-id="${highlightedId}"]`)?.scrollIntoView?.({ block: 'center' })
+    const timer = setTimeout(clearHighlight, HIGHLIGHT_MS)
+    return () => clearTimeout(timer)
+  }, [highlightedId, clearHighlight])
 
   const setView = (next: CenterView) => {
     const p = new URLSearchParams(params)
@@ -53,6 +75,12 @@ export default function NotificationCenter() {
         </div>
       </div>
 
+      {center.focusMissing && (
+        <p role="status" className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+          ההתראה לא נמצאה
+        </p>
+      )}
+
       {center.error && (
         <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">
           {center.error}
@@ -65,8 +93,19 @@ export default function NotificationCenter() {
           className={cn('min-h-0 overflow-y-auto rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900',
             selected && 'hidden lg:block')}
         >
+          {center.pinned && (
+            <ul aria-label="ההתראה שנפתחה" className="border-b border-gray-200 dark:border-gray-700">
+              <NotificationListItem
+                notification={center.pinned}
+                selected={center.pinned.id === selected?.id}
+                highlighted={center.pinned.id === highlightedId}
+                onSelect={center.select}
+              />
+            </ul>
+          )}
           <NotificationList
             view={view}
+            highlightedId={highlightedId}
             items={center.items}
             loading={center.loading}
             loadingMore={center.loadingMore}
@@ -83,25 +122,15 @@ export default function NotificationCenter() {
             !selected && 'hidden lg:block')}
         >
           {selected ? (
-            // The details panel (summary, full content, archived tasks) is stage 3e-2b.
-            <div className="space-y-3" data-testid="selected-notification">
-              <button type="button" className="text-sm text-blue-600 lg:hidden" onClick={() => center.clearSelection()}>
-                חזרה לרשימה
-              </button>
-              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{selected.title}</h2>
-              {selected.read_at != null ? (
-                <button
-                  type="button"
-                  onClick={() => void center.setRead(selected, false)}
-                  disabled={center.patchingId === selected.id}
-                  className="text-sm text-blue-600 hover:underline disabled:opacity-50 dark:text-blue-400"
-                >
-                  סמן כלא נקראה
-                </button>
-              ) : (
-                <span className="text-sm text-gray-500 dark:text-gray-400">לא נקראה</span>
-              )}
-            </div>
+            <NotificationSummary
+              key={selected.id}
+              notification={selected}
+              marking={center.patchingId === selected.id}
+              onMarkUnread={() => void center.setRead(selected, false)}
+              onBack={center.clearSelection}
+              onChanged={() => void center.refresh()}
+              onUpdate={center.updateSelected}
+            />
           ) : (
             <p className="py-10 text-center text-sm text-gray-500 dark:text-gray-400">בחרו עדכון מהרשימה</p>
           )}

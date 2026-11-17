@@ -58,6 +58,13 @@ const ALL_NAVIGATION_ITEMS: NavigationItem[] = [
     permission: { resource: 'dashboard' }
   },
   {
+    // Every signed-in user's own notifications: no permission needed.
+    name: 'מרכז עדכונים',
+    href: '/notifications',
+    icon: Bell,
+    description: 'כל העדכונים וההתראות שלך',
+  },
+  {
     name: 'פרויקטים',
     href: '/projects',
     icon: FolderOpen,
@@ -169,11 +176,26 @@ function useTaskUnreadTotal(): number {
   return useSelector((state: RootState) => state.notifications.taskChatUnread)
 }
 
+/** Unread notifications of every module (the server counts up to 1000). */
+function useNotificationUnread(): number {
+  return useSelector((state: RootState) => state.notifications.unreadCount)
+}
+
+/** The nav badge text: task chat (99+, as before) or notifications (999+). */
+export function navBadge(href: string, taskUnread: number, notificationUnread: number): string | null {
+  if (href === '/task-management' && taskUnread > 0) return taskUnread > 99 ? '99+' : String(taskUnread)
+  if (href === '/notifications' && notificationUnread > 0) {
+    return notificationUnread > 999 ? '999+' : String(notificationUnread)
+  }
+  return null
+}
+
 export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
   const location = useLocation()
   const { theme, toggleTheme } = useTheme()
   const me = useSelector((state: RootState) => state.auth.me)
   const taskUnread = useTaskUnreadTotal()
+  const notificationUnread = useNotificationUnread()
   const permissions = useSelector((state: RootState) => state.permissions.permissions)
   const { open: openInventorySettings } = useInventorySettings()
   const navigationItems = filterNavigationItems(ALL_NAVIGATION_ITEMS, me?.role, permissions)
@@ -271,9 +293,9 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
                     "w-5 h-5",
                     isActive ? "text-blue-600 dark:text-blue-400" : "text-gray-500 dark:text-gray-400"
                   )} />
-                  {item.href === '/task-management' && taskUnread > 0 && (
+                  {navBadge(item.href, taskUnread, notificationUnread) && (
                     <span className="absolute -top-1 -left-1 min-w-[1.25rem] h-5 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-medium">
-                      {taskUnread > 99 ? '99+' : taskUnread}
+                      {navBadge(item.href, taskUnread, notificationUnread)}
                     </span>
                   )}
                 </span>
@@ -374,6 +396,7 @@ export function MobileSidebar({ isOpen, onClose }: MobileSidebarProps) {
   const { theme, toggleTheme } = useTheme()
   const me = useSelector((state: RootState) => state.auth.me)
   const taskUnread = useTaskUnreadTotal()
+  const notificationUnread = useNotificationUnread()
   const permissions = useSelector((state: RootState) => state.permissions.permissions)
   const { open: openInventorySettings } = useInventorySettings()
   const navigationItems = filterNavigationItems(ALL_NAVIGATION_ITEMS, me?.role, permissions)
@@ -449,9 +472,9 @@ export function MobileSidebar({ isOpen, onClose }: MobileSidebarProps) {
                           "w-5 h-5",
                           isActive ? "text-blue-600 dark:text-blue-400" : "text-gray-500 dark:text-gray-400"
                         )} />
-                        {item.href === '/task-management' && taskUnread > 0 && (
+                        {navBadge(item.href, taskUnread, notificationUnread) && (
                           <span className="absolute -top-1 -left-1 min-w-[1.25rem] h-5 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-medium">
-                            {taskUnread > 99 ? '99+' : taskUnread}
+                            {navBadge(item.href, taskUnread, notificationUnread)}
                           </span>
                         )}
                       </span>

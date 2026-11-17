@@ -210,13 +210,54 @@ export function useNotificationCenter(view: CenterView) {
   /** Selecting a notification shows it and marks it read. */
   const select = useCallback((n: CenterNotification) => {
     setSelected(n)
+    setPinned((p) => (p?.id === n.id ? null : p))
     if (n.read_at == null) void setRead(n, true)
   }, [setRead])
 
   const clearSelection = useCallback(() => setSelected(null), [])
 
+  // ── focus from a toast (?id=): highlight only — no selection, no mark read ─
+
+  const [highlightedId, setHighlightedId] = useState<number | null>(null)
+  /** The focused one when it is not in the loaded list: fetched alone, shown above it. */
+  const [pinned, setPinned] = useState<CenterNotification | null>(null)
+  const [focusMissing, setFocusMissing] = useState(false)
+
+  const focus = useCallback(async (id: number) => {
+    setFocusMissing(false)
+    if (listRef.current.items.some((n) => n.id === id)) {
+      setPinned(null)
+      setHighlightedId(id)
+      return
+    }
+    try {
+      const { data } = await api.get<CenterNotification>(`/notifications/${id}`, { params: { scope: 'all' } })
+      setPinned(data)
+      setHighlightedId(id)
+    } catch {
+      setPinned(null)
+      setHighlightedId(null)
+      setFocusMissing(true)                              // not found (or not this user's)
+    }
+  }, [])
+  const clearHighlight = useCallback(() => setHighlightedId(null), [])
+
+  /** Facts learnt from the task panel (archived / deleted there) before the list
+   * refreshes: applied to the selected one and its row. */
+  const updateSelected = useCallback((patch: Partial<CenterNotification>) => {
+    setSelected((current) => {
+      if (!current) return current
+      const next = { ...current, ...patch }
+      setItems((list) => list.map((n) => (n.id === next.id ? { ...n, ...patch } : n)))
+      return next
+    })
+  }, [])
+
   return {
     items, loading, loadingMore, error, hasMore: cursor != null,
-    loadMore, selected, select, clearSelection, setRead, patchingId, refresh,
+    loadMore, selected, select, clearSelection, updateSelected, setRead, patchingId, refresh,
+    focus, highlightedId, clearHighlight, focusMissing,
+    // shown only while it is not in the list itself
+    pinned: pinned && !items.some((n) => n.id === pinned.id) ? pinned : null,
   }
 }

@@ -6,6 +6,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
+from backend.core.config import settings
 from backend.core.deps import DBSessionDep, get_current_user
 from backend.models.task import TaskKind
 from backend.repositories.notification_repository import NotificationRepository
@@ -34,6 +35,13 @@ UNREAD_COUNT_CAP = 1000
 
 def _task_kind(scope: Scope) -> str | None:
     return None if scope == "all" else TaskKind.GENERAL
+
+
+def _created_from(scope: Scope):
+    """The notification center (scope=all) starts at NOTIFICATION_CENTER_START: what
+    was created before it is not listed, counted, toasted or opened there (it stays
+    in the database). scope=general — the existing meaning — is not affected."""
+    return settings.NOTIFICATION_CENTER_START if scope == "all" else None
 
 
 def _preview(n: UserNotification) -> str | None:
@@ -107,6 +115,7 @@ async def list_my_notifications(
     items = await repo.list_for_user(
         user.id, unread_only=unread_only, view=view, type_filter=type_filter,
         limit=limit + 1, offset=offset, before=before, task_kind=_task_kind(scope),
+        created_from=_created_from(scope),
     )
     if len(items) > limit:
         items = items[:limit]
@@ -131,9 +140,11 @@ async def get_unread_count(
     repo = NotificationRepository(db)
     task_kind = _task_kind(scope)
     cap = UNREAD_COUNT_CAP if scope == "all" else None
-    out: dict = {"count": await repo.count_unread(user.id, task_kind, cap=cap)}
+    created_from = _created_from(scope)
+    out: dict = {"count": await repo.count_unread(user.id, task_kind, cap=cap, created_from=created_from)}
     if latest:
-        items = await repo.list_for_user(user.id, view="unread", limit=latest, task_kind=task_kind)
+        items = await repo.list_for_user(user.id, view="unread", limit=latest, task_kind=task_kind,
+                                         created_from=created_from)
         out["latest"] = [
             NotificationOut(**_to_out(n, with_body=scope == "general")).model_dump(mode="json") for n in items
         ]
@@ -149,7 +160,7 @@ async def get_notification(
 ):
     """פרטי הודעה אחת (רק של המשתמש המחובר)."""
     repo = NotificationRepository(db)
-    n = await repo.get_by_id(notification_id, user.id)
+    n = await repo.get_by_id(notification_id, user.id, created_from=_created_from(scope))
     if not n:
         raise HTTPException(status_code=404, detail="הודעה לא נמצאה")
     return _to_out(n, with_body=scope == "general")
@@ -165,7 +176,7 @@ async def mark_notification_read(
 ):
     """סמן הודעה כנקראה או כלא נקראה."""
     repo = NotificationRepository(db)
-    n = await repo.get_by_id(notification_id, user.id)
+    n = await repo.get_by_id(notification_id, user.id, created_from=_created_from(scope))
     if not n:
         raise HTTPException(status_code=404, detail="הודעה לא נמצאה")
     if read:

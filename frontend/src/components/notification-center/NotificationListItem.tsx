@@ -36,6 +36,7 @@ export default function NotificationListItem({ notification: n, selected, highli
         onClick={() => onSelect(n)}
         aria-current={selected ? 'true' : undefined}
         data-notification-id={n.id}
+        data-highlighted={highlighted ? 'true' : undefined}
         className={cn(
           'w-full text-right px-4 py-3 flex gap-3 items-start transition-colors',
           'hover:bg-gray-50 dark:hover:bg-gray-800/60',

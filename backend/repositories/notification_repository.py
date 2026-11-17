@@ -60,10 +60,12 @@ class NotificationRepository:
         offset: int = 0,
         before: tuple[datetime, int] | None = None,
         task_kind: str | None = TaskKind.GENERAL,
+        created_from: datetime | None = None,
     ) -> list[UserNotification]:
         """Newest first, ``created_at DESC, id DESC`` (the order of the stage-1
         indexes). ``view`` (unread / read / all) overrides ``unread_only``.
-        ``before``: keyset paging — only rows strictly after that (created_at, id)."""
+        ``before``: keyset paging — only rows strictly after that (created_at, id).
+        ``created_from``: only those created at or after it (the center's start)."""
         view = view or (VIEW_UNREAD if unread_only else VIEW_ALL)
         q = (
             select(UserNotification)
@@ -79,6 +81,8 @@ class NotificationRepository:
             q = q.where(UserNotification.type == type_filter)
         if before is not None:
             q = q.where(tuple_(UserNotification.created_at, UserNotification.id) < tuple_(*before))
+        if created_from is not None:
+            q = q.where(UserNotification.created_at >= created_from)
         q = (
             q.order_by(UserNotification.created_at.desc(), UserNotification.id.desc())
             .limit(limit)
@@ -151,8 +155,11 @@ class NotificationRepository:
             )
         )
 
-    async def get_by_id(self, notification_id: int, user_id: int) -> UserNotification | None:
-        result = await self.db.execute(
+    async def get_by_id(
+        self, notification_id: int, user_id: int, *, created_from: datetime | None = None
+    ) -> UserNotification | None:
+        """``created_from``: not found if created before it (the center's start)."""
+        q = (
             select(UserNotification)
             .options(*display_options())
             .where(
@@ -160,18 +167,25 @@ class NotificationRepository:
                 UserNotification.user_id == user_id,
             )
         )
+        if created_from is not None:
+            q = q.where(UserNotification.created_at >= created_from)
+        result = await self.db.execute(q)
         return result.unique().scalar_one_or_none()
 
     async def count_unread(
-        self, user_id: int, task_kind: str | None = TaskKind.GENERAL, *, cap: int | None = None
+        self, user_id: int, task_kind: str | None = TaskKind.GENERAL, *, cap: int | None = None,
+        created_from: datetime | None = None,
     ) -> int:
         """Unread notifications. ``cap``: count at most that many (a bounded scan of
-        the partial unread index; the caller shows e.g. "999+")."""
+        the partial unread index; the caller shows e.g. "999+"). ``created_from``: only
+        those created at or after it (the center's start)."""
         where = (
             UserNotification.user_id == user_id,
             UserNotification.read_at.is_(None),
             _task_kind_clause(task_kind),
         )
+        if created_from is not None:
+            where = (*where, UserNotification.created_at >= created_from)
         if cap is None:
             result = await self.db.execute(select(func.count(UserNotification.id)).where(*where))
         else:

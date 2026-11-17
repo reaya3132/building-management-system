@@ -39,7 +39,7 @@ const LegalProceedings = React.lazy(() => import('./pages/LegalProceedings'))
 const LegalProceedingPage = React.lazy(() => import('./pages/LegalProceedingPage'))
 const TaskCalendar = React.lazy(() => import('./pages/TaskCalendar'))
 const UserPermissions = React.lazy(() => import('./pages/UserPermissions'))
-const Notifications = React.lazy(() => import('./pages/Notifications'))
+const NotificationCenter = React.lazy(() => import('./pages/NotificationCenter'))
 const UserGuide = React.lazy(() => import('./pages/UserGuide'))
 const InventoryLayout = React.lazy(() => import('./pages/inventory/InventoryLayout'))
 const InventoryDashboard = React.lazy(() => import('./pages/inventory/InventoryDashboard'))
@@ -310,7 +310,7 @@ function AppContent() {
                 <Route path="transfers" element={<TransfersPage />} />
                 <Route path="returns" element={<ReturnsPage />} />
               </Route>
-              <Route path="/notifications" element={<Navigate to="/task-management?tab=messages" replace />} />
+              <Route path="/notifications" element={<RequireAuth><NotificationCenter /></RequireAuth>} />
               <Route path="/suppliers/:supplierId/documents" element={<RequireAuth><RequirePermission resource="supplier"><SupplierDocuments /></RequirePermission></RequireAuth>} />
               <Route path="/users" element={<RequireAuth><UserManagement /></RequireAuth>} />
               <Route path="/users/:userId/permissions" element={<RequireAuth><UserPermissions /></RequireAuth>} />
