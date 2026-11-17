@@ -1,6 +1,8 @@
 """Repository for user notifications."""
 from datetime import datetime
-from sqlalchemy import DateTime, String, Text, exists, insert, literal, select, func, update, or_
+from sqlalchemy import (
+    DateTime, String, Text, exists, insert, literal, select, func, true, tuple_, update, or_,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload, load_only, raiseload
 
@@ -15,14 +17,22 @@ def display_options():
     participants or labels, no user preferences)."""
     return (
         joinedload(UserNotification.from_user).options(load_only(User.full_name), raiseload("*")),
-        joinedload(UserNotification.task).options(load_only(Task.title), raiseload("*")),
+        joinedload(UserNotification.task).options(
+            load_only(Task.title, Task.task_kind, Task.is_archived), raiseload("*")),
     )
 
 
-def _task_kind_clause(task_kind: str):
+# The notification center's views.
+VIEW_UNREAD, VIEW_READ, VIEW_ALL = "unread", "read", "all"
+
+
+def _task_kind_clause(task_kind: str | None):
     """Keep each module's notifications apart: the general center shows
     notifications with no task or on a regular task; collection notifications
-    are shown only by the collection module."""
+    are shown only by the collection module. ``None``: every module (the
+    notification center)."""
+    if task_kind is None:
+        return true()
     in_kind = UserNotification.task_id.in_(select(Task.id).where(Task.task_kind == task_kind))
     if task_kind == TaskKind.GENERAL:
         return or_(UserNotification.task_id.is_(None), in_kind)
@@ -44,22 +54,36 @@ class NotificationRepository:
         user_id: int,
         *,
         unread_only: bool = False,
+        view: str | None = None,
         type_filter: str | None = None,
         limit: int = 100,
         offset: int = 0,
-        task_kind: str = TaskKind.GENERAL,
+        before: tuple[datetime, int] | None = None,
+        task_kind: str | None = TaskKind.GENERAL,
     ) -> list[UserNotification]:
+        """Newest first, ``created_at DESC, id DESC`` (the order of the stage-1
+        indexes). ``view`` (unread / read / all) overrides ``unread_only``.
+        ``before``: keyset paging — only rows strictly after that (created_at, id)."""
+        view = view or (VIEW_UNREAD if unread_only else VIEW_ALL)
         q = (
             select(UserNotification)
             .options(*display_options())
             .where(UserNotification.user_id == user_id)
             .where(_task_kind_clause(task_kind))
         )
-        if unread_only:
+        if view == VIEW_UNREAD:
             q = q.where(UserNotification.read_at.is_(None))
+        elif view == VIEW_READ:
+            q = q.where(UserNotification.read_at.is_not(None))
         if type_filter:
             q = q.where(UserNotification.type == type_filter)
-        q = q.order_by(UserNotification.created_at.desc()).limit(limit).offset(offset)
+        if before is not None:
+            q = q.where(tuple_(UserNotification.created_at, UserNotification.id) < tuple_(*before))
+        q = (
+            q.order_by(UserNotification.created_at.desc(), UserNotification.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         result = await self.db.execute(q)
         return list(result.unique().scalars().all())
 
@@ -138,14 +162,21 @@ class NotificationRepository:
         )
         return result.unique().scalar_one_or_none()
 
-    async def count_unread(self, user_id: int, task_kind: str = TaskKind.GENERAL) -> int:
-        result = await self.db.execute(
-            select(func.count(UserNotification.id)).where(
-                UserNotification.user_id == user_id,
-                UserNotification.read_at.is_(None),
-                _task_kind_clause(task_kind),
-            )
+    async def count_unread(
+        self, user_id: int, task_kind: str | None = TaskKind.GENERAL, *, cap: int | None = None
+    ) -> int:
+        """Unread notifications. ``cap``: count at most that many (a bounded scan of
+        the partial unread index; the caller shows e.g. "999+")."""
+        where = (
+            UserNotification.user_id == user_id,
+            UserNotification.read_at.is_(None),
+            _task_kind_clause(task_kind),
         )
+        if cap is None:
+            result = await self.db.execute(select(func.count(UserNotification.id)).where(*where))
+        else:
+            capped = select(UserNotification.id).where(*where).limit(cap).subquery()
+            result = await self.db.execute(select(func.count()).select_from(capped))
         return result.scalar() or 0
 
     async def get_task_ids_with_unread_message(

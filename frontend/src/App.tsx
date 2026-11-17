@@ -63,6 +63,8 @@ import { cn } from './lib/utils'
 import { avatarUrl } from './lib/api'
 import { AccessDenied, NoPermissions } from './components/ui/AccessDenied'
 import AssistantChat from './components/AssistantChat'
+import NotificationToastQueue from './components/notification-center/NotificationToastQueue'
+import { useBackgroundPolling } from './hooks/useBackgroundPolling'
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const dispatch = useDispatch()
@@ -208,6 +210,7 @@ function AppContent() {
   return (
     <InventorySettingsProvider>
     <div className="min-h-screen h-screen flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
+      <SignedInBackground />
       {/* Desktop Sidebar */}
       <div className="hidden lg:block">
         <Sidebar
@@ -336,4 +339,11 @@ export default function App() {
       <AppContent />
     </ThemeProvider>
   )
+}
+
+/** Signed in only: the app's one background poll (task-chat badge, notification
+ * count and new notifications) and the notification toasts. */
+function SignedInBackground() {
+  useBackgroundPolling()
+  return <NotificationToastQueue />
 }

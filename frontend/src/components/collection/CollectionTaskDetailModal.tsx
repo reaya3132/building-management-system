@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSelector } from 'react-redux'
 import {
   Archive,
@@ -84,7 +84,17 @@ interface CollectionTaskDetailModalProps {
   onChanged: () => void
 }
 
-export default function CollectionTaskDetailModal({ taskId, onClose, onChanged }: CollectionTaskDetailModalProps) {
+interface RefreshOnFocus {
+  /** False while the user has unsaved input; the refresh is then skipped (checked
+   * before the request and again when it returns), so an open form is never
+   * re-based on newer data that it would then send back as if edited. */
+  canRefresh: () => boolean
+}
+
+/** The task's state and actions, shared by the modal and the embedded panel.
+ * ``refreshOnFocus`` (the embedded panel only): reload from the server when the
+ * tab / window becomes visible again — never while hidden, never during an action. */
+function useCollectionTaskDetail(taskId: number | null, onChanged: () => void, refreshOnFocus?: RefreshOnFocus) {
   const me = useSelector((s: RootState) => s.auth.me)
   const canWriteFiles = usePermission('write', 'collection_task')
   const canUpdateFiles = usePermission('update', 'collection_task')
@@ -122,8 +132,10 @@ export default function CollectionTaskDetailModal({ taskId, onClose, onChanged }
   }, [taskId, load, onChanged])
 
   /** Runs an action that returns the updated task. */
+  const busyRef = useRef(false)
   const apply = async (action: () => Promise<CollectionTaskDetail>, fallback: string) => {
     setBusy(true)
+    busyRef.current = true
     setError(null)
     try {
       setTask(await action())
@@ -134,9 +146,44 @@ export default function CollectionTaskDetailModal({ taskId, onClose, onChanged }
       setError(collectionErrorMessage(err, fallback))
       return false
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
   }
+
+  const canRefreshRef = useRef(refreshOnFocus?.canRefresh)
+  canRefreshRef.current = refreshOnFocus?.canRefresh
+  const enabled = refreshOnFocus != null
+  useEffect(() => {
+    if (!enabled || taskId == null) return
+    let inFlight = false
+    let active = true
+    const canRefresh = () => !busyRef.current && (canRefreshRef.current?.() ?? true)
+    const onReturn = async () => {
+      // focus and visibilitychange usually fire together: one request at a time.
+      if (document.hidden || inFlight || !canRefresh()) return
+      inFlight = true
+      try {
+        const fresh = await CollectionAPI.get(taskId)
+        // The user may have started editing while the request was out.
+        if (active && canRefresh()) {
+          setTask(fresh)
+          setHistoryKey((k) => k + 1)
+        }
+      } catch {
+        /* a background refresh failing keeps what is shown; the next return retries */
+      } finally {
+        inFlight = false
+      }
+    }
+    document.addEventListener('visibilitychange', onReturn)
+    window.addEventListener('focus', onReturn)
+    return () => {
+      active = false
+      document.removeEventListener('visibilitychange', onReturn)
+      window.removeEventListener('focus', onReturn)
+    }
+  }, [enabled, taskId])
 
   const can = task ? collectionTaskAbilities(task, me) : null
   const lockReason = task?.is_archived
@@ -145,22 +192,108 @@ export default function CollectionTaskDetailModal({ taskId, onClose, onChanged }
       ? 'המשימה סגורה — יש לפתוח אותה מחדש כדי לשנות סכומים.'
       : null
 
+  return {
+    task, loading, error, setError, tab, setTab, busy, historyKey, refresh, apply, can, lockReason,
+    canWriteFiles, canUpdateFiles,
+  }
+}
+
+type CollectionTaskDetailState = ReturnType<typeof useCollectionTaskDetail>
+
+function CollectionTaskSubtitle({ task }: { task: CollectionTaskDetail }) {
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      <span>{task.project.parent_name ? `${task.project.parent_name} › ` : ''}{task.project.name}</span>
+      <span>·</span>
+      <span>{formatMonth(task.billing_month)}</span>
+      {task.is_archived && <span className="px-1.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200">בארכיון</span>}
+    </span>
+  )
+}
+
+export default function CollectionTaskDetailModal({ taskId, onClose, onChanged }: CollectionTaskDetailModalProps) {
+  const state = useCollectionTaskDetail(taskId, onChanged)
+  const { task } = state
   return (
     <CollectionModal
       isOpen={taskId != null}
       onClose={onClose}
       icon={Wallet}
       title={task ? displayCollectionTitle(task) : 'משימת גבייה'}
-      subtitle={task && (
-        <span className="flex flex-wrap items-center gap-1.5">
-          <span>{task.project.parent_name ? `${task.project.parent_name} › ` : ''}{task.project.name}</span>
-          <span>·</span>
-          <span>{formatMonth(task.billing_month)}</span>
-          {task.is_archived && <span className="px-1.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200">בארכיון</span>}
-        </span>
-      )}
+      subtitle={task && <CollectionTaskSubtitle task={task} />}
       maxWidth="max-w-3xl"
     >
+      <CollectionTaskDetailBody state={state} embedded={false} />
+    </CollectionModal>
+  )
+}
+
+export interface CollectionTaskDetailPanelProps {
+  taskId: number
+  /** Called after any change (e.g. to refresh a list). */
+  onChanged?: () => void
+}
+
+/** The same task view inline, for the notification center: same tabs, data and
+ * actions as the modal, with a header of its own. The statement export (it opens
+ * its own modal) is not offered here; it stays on the collection screen. */
+export function CollectionTaskDetailPanel({ taskId, onChanged }: CollectionTaskDetailPanelProps) {
+  const noop = useCallback(() => {}, [])
+  const rootRef = useRef<HTMLDivElement>(null)
+  // Coming back to the tab reloads the task — unless something is being typed or
+  // edited here: an open edit / move-month form, a ledger row in edit mode, a draft
+  // adjustment or ledger item (any filled field). The chat keeps its own polling.
+  const refreshOnFocus = useMemo<RefreshOnFocus>(() => ({
+    canRefresh: () => !hasUnsavedInput(rootRef.current),
+  }), [])
+  const state = useCollectionTaskDetail(taskId, onChanged ?? noop, refreshOnFocus)
+  const { task } = state
+  return (
+    <div ref={rootRef} className="space-y-4">
+      <div className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
+          <Wallet className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            {task ? displayCollectionTitle(task) : 'משימת גבייה'}
+          </h3>
+          {task && <div className="text-sm text-gray-500 dark:text-gray-400"><CollectionTaskSubtitle task={task} /></div>}
+        </div>
+      </div>
+      <CollectionTaskDetailBody state={state} embedded />
+    </div>
+  )
+}
+
+const NOT_TEXT_INPUTS = new Set(['file', 'hidden', 'checkbox', 'radio', 'button', 'submit', 'reset'])
+
+/** Whether something is being edited here (outside the chat):
+ * - an open edit / move-month form (`data-unsaved-form`), whatever its fields hold —
+ *   its date, project and assignee pickers included;
+ * - a list row in edit mode (a ledger row: its fields exist only while editing),
+ *   even with its fields emptied;
+ * - a typed draft in an always-present "add" field (ledger item, adjustment).
+ * Status changes save at once and are covered by the in-flight action guard. */
+function hasUnsavedInput(root: HTMLElement | null): boolean {
+  if (!root) return false
+  const outsideChat = (el: Element) => !el.closest('[data-refresh-ignore]')
+  if (Array.from(root.querySelectorAll('[data-unsaved-form]')).some(outsideChat)) return true
+  const fields = root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+    'input, textarea, select')
+  return Array.from(fields).some((field) =>
+    outsideChat(field) &&
+    !(field instanceof HTMLInputElement && NOT_TEXT_INPUTS.has(field.type)) &&
+    (field.value !== '' || field.closest('li') != null))
+}
+
+function CollectionTaskDetailBody({ state, embedded }: { state: CollectionTaskDetailState; embedded: boolean }) {
+  const {
+    task, loading, error, setError, tab, setTab, busy, historyKey, refresh, apply, can, lockReason,
+    canWriteFiles, canUpdateFiles,
+  } = state
+  return (
+    <>
       <ErrorBanner message={error} />
 
       {loading && !task ? (
@@ -190,12 +323,14 @@ export default function CollectionTaskDetailModal({ taskId, onClose, onChanged }
           </div>
 
           {tab === 'details' && (
-            <DetailsTab task={task} can={can} busy={busy} apply={apply} />
+            <DetailsTab task={task} can={can} busy={busy} apply={apply} allowExport={!embedded} />
           )}
           {tab === 'amounts' && (
             <CollectionAmountsPanel task={task} canChange={can.canChangeAmounts} lockReason={lockReason} onChanged={refresh} />
           )}
-          {tab === 'chat' && <CollectionChat taskId={task.id} />}
+          {tab === 'chat' && (embedded
+            ? <div data-refresh-ignore><CollectionChat taskId={task.id} /></div>
+            : <CollectionChat taskId={task.id} />)}
           {tab === 'files' && (
             <FilesTab
               task={task}
@@ -208,7 +343,7 @@ export default function CollectionTaskDetailModal({ taskId, onClose, onChanged }
           {tab === 'history' && <CollectionHistory taskId={task.id} refreshKey={historyKey} />}
         </>
       )}
-    </CollectionModal>
+    </>
   )
 }
 
@@ -219,9 +354,11 @@ interface DetailsTabProps {
   can: ReturnType<typeof collectionTaskAbilities>
   busy: boolean
   apply: (action: () => Promise<CollectionTaskDetail>, fallback: string) => Promise<boolean>
+  /** The PDF statement export (opens its own modal); off inside the notification center. */
+  allowExport?: boolean
 }
 
-function DetailsTab({ task, can, busy, apply }: DetailsTabProps) {
+function DetailsTab({ task, can, busy, apply, allowExport = true }: DetailsTabProps) {
   const [editing, setEditing] = useState(false)
   const [moving, setMoving] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -298,7 +435,7 @@ function DetailsTab({ task, can, busy, apply }: DetailsTabProps) {
         {can.canArchive && (
           <ActionButton icon={Archive} onClick={archive} disabled={busy}>העבר לארכיון</ActionButton>
         )}
-        {task.collection_type === 'ledger' && (
+        {allowExport && task.collection_type === 'ledger' && (
           <ActionButton icon={FileDown} onClick={() => setExporting(true)} disabled={busy}>ייצוא ל־PDF</ActionButton>
         )}
         {can.canUnarchive && (
@@ -308,7 +445,7 @@ function DetailsTab({ task, can, busy, apply }: DetailsTabProps) {
         )}
       </div>
       {/* The statement exists for ledgers only (the server rejects any other type). */}
-      {exporting && task.collection_type === 'ledger' && (
+      {allowExport && exporting && task.collection_type === 'ledger' && (
         <StatementExportModal task={task} isOpen onClose={() => setExporting(false)} />
       )}
     </div>
@@ -358,7 +495,7 @@ function MoveMonthForm({ task, busy, apply, onDone }: Omit<DetailsTabProps, 'can
   }
 
   return (
-    <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 p-3 space-y-3">
+    <div data-unsaved-form className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 p-3 space-y-3">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="חודש חיוב חדש" required>
           <input type="month" className={FIELD_CLASS} value={month} onChange={(e) => setMonth(e.target.value)} />
@@ -410,7 +547,7 @@ function EditForm({
     : [{ id: task.project.id, label: task.project.name }, ...projectOptions]
 
   return (
-    <div className="space-y-4">
+    <div data-unsaved-form className="space-y-4">
       <ErrorBanner message={error} />
       <Field label="כותרת" required>
         <input className={FIELD_CLASS} value={title} onChange={(e) => setTitle(e.target.value)} maxLength={255} />

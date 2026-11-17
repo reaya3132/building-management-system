@@ -4,19 +4,40 @@ import { CheckCircle, XCircle, AlertCircle, Info, X } from 'lucide-react'
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info'
 
-interface Toast {
+export interface Toast {
   id: string
   message: string
   type: ToastType
   duration?: number
+  /** Optional bold first line (the notification toasts). */
+  title?: string
+  /** Optional: the toast body becomes a button (e.g. open the notification). */
+  onClick?: () => void
 }
 
 interface ToastNotificationProps {
   toast: Toast | null
   onClose: () => void
+  /** Default: top center, as everywhere so far. */
+  position?: 'top-center' | 'bottom-left'
 }
 
-const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onClose }) => {
+const POSITIONS = {
+  'top-center': {
+    className: 'top-4 left-1/2',
+    initial: { opacity: 0, y: -50, x: '-50%' },
+    animate: { opacity: 1, y: 0, x: '-50%' },
+    exit: { opacity: 0, y: -20, x: '-50%' },
+  },
+  'bottom-left': {
+    className: 'bottom-4 left-4',
+    initial: { opacity: 0, y: 20 },
+    animate: { opacity: 1, y: 0 },
+    exit: { opacity: 0, y: 20 },
+  },
+} as const
+
+const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onClose, position = 'top-center' }) => {
   useEffect(() => {
     if (toast) {
       const duration = toast.duration || 5000
@@ -62,21 +83,42 @@ const ToastNotification: React.FC<ToastNotificationProps> = ({ toast, onClose })
 
   const styles = typeStyles[toast.type]
   const Icon = styles.icon
+  const place = POSITIONS[position]
+  const content = (
+    <span className="flex-1 min-w-0">
+      {toast.title && (
+        <span className={`block ${styles.text} text-sm font-semibold truncate`}>{toast.title}</span>
+      )}
+      <span className={`block ${styles.text} text-sm ${toast.title ? 'opacity-90' : 'font-medium'}`}>
+        {toast.message}
+      </span>
+    </span>
+  )
 
   return (
     <AnimatePresence>
       <motion.div
-        initial={{ opacity: 0, y: -50, x: '-50%' }}
-        animate={{ opacity: 1, y: 0, x: '-50%' }}
-        exit={{ opacity: 0, y: -20, x: '-50%' }}
-        className={`fixed top-4 left-1/2 z-[100] ${styles.bg} ${styles.border} border rounded-xl shadow-lg p-4 min-w-[300px] max-w-[500px]`}
+        key={toast.id}
+        initial={place.initial}
+        animate={place.animate}
+        exit={place.exit}
+        role="status"
+        aria-live="polite"
+        className={`fixed ${place.className} z-[100] ${styles.bg} ${styles.border} border rounded-xl shadow-lg p-4 min-w-[300px] max-w-[500px]`}
       >
         <div className="flex items-start gap-3">
           <Icon className={`w-5 h-5 ${styles.iconColor} flex-shrink-0 mt-0.5`} />
-          <p className={`flex-1 ${styles.text} text-sm font-medium`}>
-            {toast.message}
-          </p>
+          {toast.onClick ? (
+            <button type="button" onClick={toast.onClick} className="flex-1 min-w-0 text-right hover:opacity-80">
+              {content}
+            </button>
+          ) : toast.title ? content : (
+            <p className={`flex-1 ${styles.text} text-sm font-medium`}>
+              {toast.message}
+            </p>
+          )}
           <button
+            aria-label="סגירה"
             onClick={onClose}
             className={`${styles.text} hover:opacity-70 transition-opacity flex-shrink-0`}
           >

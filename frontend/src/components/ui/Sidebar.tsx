@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Link, useLocation } from 'react-router-dom'
 import {
@@ -28,10 +28,8 @@ import {
 import { useTheme } from '../../contexts/ThemeContext'
 import { useInventorySettings } from '../../contexts/InventorySettingsContext'
 import { cn } from '../../lib/utils'
-import api from '../../lib/api'
-import { useSelector, useDispatch } from 'react-redux'
-import type { RootState, AppDispatch } from '../../store'
-import { fetchUnreadCount } from '../../store/slices/notificationsSlice'
+import { useSelector } from 'react-redux'
+import type { RootState } from '../../store'
 import type { Permission } from '../../store/slices/permissionsSlice'
 import { Logo } from './Logo'
 
@@ -163,43 +161,16 @@ function filterNavigationItems(
 }
 
 /**
- * Total unread task-chat messages for the current user, polled in the background
- * (~30s) and refreshed on tab focus. Drives the red badge on the "ניהול משימות"
- * nav item so a new message is visible from anywhere in the app.
+ * Total unread task-chat messages for the current user — the red badge on the
+ * "ניהול משימות" nav item. Kept fresh by the app's one background poll
+ * (useBackgroundPolling: ~30s and on tab focus); both sidebars read it here.
  */
 function useTaskUnreadTotal(): number {
-  const me = useSelector((state: RootState) => state.auth.me)
-  const [total, setTotal] = useState(0)
-  useEffect(() => {
-    if (!me) {
-      setTotal(0)
-      return
-    }
-    let active = true
-    const load = async () => {
-      try {
-        const { data } = await api.get<{ total_unread: number }>('/tasks/unread-summary')
-        if (active) setTotal(data.total_unread ?? 0)
-      } catch {
-        /* ignore transient failures */
-      }
-    }
-    void load()
-    const interval = setInterval(() => { if (!document.hidden) void load() }, 30_000)
-    const onVisible = () => { if (!document.hidden) void load() }
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      active = false
-      clearInterval(interval)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
-  }, [me])
-  return total
+  return useSelector((state: RootState) => state.notifications.taskChatUnread)
 }
 
 export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
   const location = useLocation()
-  const dispatch = useDispatch<AppDispatch>()
   const { theme, toggleTheme } = useTheme()
   const me = useSelector((state: RootState) => state.auth.me)
   const taskUnread = useTaskUnreadTotal()
@@ -208,9 +179,6 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
   const navigationItems = filterNavigationItems(ALL_NAVIGATION_ITEMS, me?.role, permissions)
     .map(item => item.href === '/inventory' ? { ...item, onSettingsClick: openInventorySettings } : item)
 
-  useEffect(() => {
-    if (me) dispatch(fetchUnreadCount())
-  }, [dispatch, me])
 
   return (
     <motion.aside

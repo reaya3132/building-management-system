@@ -167,7 +167,8 @@ def create_app() -> FastAPI:
             "Authorization", "Content-Type", "Accept", "Origin",
             "X-Requested-With", "Cache-Control", "Pragma",
         ],
-        expose_headers=["Content-Disposition"],
+        # X-Next-Cursor: the notification list's next page (read by the frontend).
+        expose_headers=["Content-Disposition", "X-Next-Cursor"],
         max_age=3600,
     )
     app.add_middleware(PreflightCORSMiddleware)

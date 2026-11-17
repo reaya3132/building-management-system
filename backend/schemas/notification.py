@@ -17,6 +17,15 @@ class NotificationOut(BaseModel):
     created_at: datetime
     from_user_name: str | None = None
     task_title: str | None = None
+    # Notification center (additive): the related task's module, "general" /
+    # "collection" (None without a task, or once the task is deleted), and a short
+    # one-line summary of ``body`` for lists and toasts — None for a chat message,
+    # whose content the center does not show.
+    task_kind: str | None = None
+    # Whether the related task is archived now (None without a task, or once it is
+    # deleted): the center then shows the notification only, without the task.
+    task_archived: bool | None = None
+    body_preview: str | None = None
 
 
 class NotificationCreate(BaseModel):
