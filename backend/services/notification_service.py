@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.user import User
 from backend.models.user_notification import UserNotification, NotificationType
-from backend.models.task import Task
+from backend.models.task import Task, TaskKind
 from backend.repositories.notification_repository import NotificationRepository
 
 
@@ -78,15 +78,56 @@ def _task_assignee_ids(task: Task) -> list[int]:
     return ordered
 
 
-def _collect_task_recipient_ids(task: Task, exclude_user_id: int) -> set[int]:
-    """User ids tied to a task (all assignees + participants), excluding one user."""
+def _collect_task_recipient_ids(task: Task, exclude_user_id: int | None) -> set[int]:
+    """User ids tied to a task — all assignees, participants and the task's
+    creator (even when not assigned) — excluding the user who acted. An Admin is
+    included only through one of these ties."""
     recipient_ids: set[int] = set(_task_assignee_ids(task))
     for participant in getattr(task, "participants", None) or []:
         participant_user_id = getattr(participant, "user_id", None)
         if participant_user_id:
             recipient_ids.add(participant_user_id)
+    if task.created_by_user_id:
+        recipient_ids.add(task.created_by_user_id)
     recipient_ids.discard(exclude_user_id)
     return recipient_ids
+
+
+_ARCHIVE_KIND = {
+    TaskKind.GENERAL: ("משימה", "משימה כללית"),
+    TaskKind.COLLECTION: ("משימת גבייה", "משימת גבייה"),
+}
+
+
+async def create_task_archived_notifications(
+    db: AsyncSession,
+    task: Task,
+    actor: User,
+    archived_at: datetime,
+) -> None:
+    """Notify everyone tied to a manually archived task (general or collection),
+    except the user who archived it.
+
+    The notification carries everything it shows, as text, so it stays complete
+    after the task or the archiving user is deleted (task_id / from_user_id are
+    then set to NULL): the task's title and kind in ``title``, the kind and the
+    archiving user's name in ``body``, the archiving time in ``created_at``.
+    Call with the archived_at returned by ``TaskRepository.archive_if_active``,
+    in the same transaction.
+    """
+    recipient_ids = _collect_task_recipient_ids(task, actor.id)
+    if not recipient_ids:
+        return
+    short, label = _ARCHIVE_KIND.get(task.task_kind, _ARCHIVE_KIND[TaskKind.GENERAL])
+    prefix = f"{short} אורכבה: "
+    await NotificationRepository(db).create_archived(
+        recipient_ids,
+        task_id=task.id,
+        from_user_id=actor.id,
+        title=prefix + task.title[: 255 - len(prefix)],
+        body=f"סוג: {label} · אורכבה על ידי {actor.full_name}",
+        archived_at=archived_at,
+    )
 
 
 def _build_message_preview(message_text: str, max_length: int = 120) -> str:
@@ -115,6 +156,8 @@ async def create_task_message_notifications(
 
     repo = NotificationRepository(db)
     title = f"הודעה חדשה במשימה: {task.title}"
+    # An unread notification that absorbs another message says so, without a count.
+    merged_title = f"הודעות חדשות במשימה: {task.title}"
     preview = _build_message_preview(message_text)
 
     for recipient_id in recipient_ids:
@@ -122,7 +165,7 @@ async def create_task_message_notifications(
             recipient_id, task.id, NotificationType.TASK_MESSAGE
         )
         if existing:
-            existing.title = title
+            existing.title = merged_title
             existing.body = preview
             existing.from_user_id = from_user_id
             existing.created_at = datetime.now(timezone.utc).replace(tzinfo=None)

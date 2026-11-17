@@ -14,6 +14,10 @@ class NotificationType:
     TASK_REMINDER = "task_reminder"
     GENERAL = "general"
     TASK_MESSAGE = "task_message"  # הודעת צ'אט חדשה במשימה
+    # משימה (כללית או גבייה) אורכבה ידנית. The task's kind, title, the archiving
+    # user and the time are kept in title / body / created_at, so the notification
+    # stays complete after the task or that user is deleted.
+    TASK_ARCHIVED = "task_archived"
 
 
 class UserNotification(Base):
@@ -43,9 +47,30 @@ class UserNotification(Base):
     user: Mapped["User"] = relationship(
         "User", back_populates="notifications", foreign_keys=[user_id]
     )
+    # Not loaded with the notification: a notification shows only the sender's name
+    # and the task's title, and loading the whole User / Task here pulled each
+    # task's assignees, participants, labels and apartment into every notification
+    # list. NotificationRepository loads just those two columns (display_options);
+    # an implicit load raises.
     from_user: Mapped["User | None"] = relationship(
-        "User", foreign_keys=[from_user_id], lazy="selectin"
+        "User", foreign_keys=[from_user_id], lazy="raise_on_sql"
     )
     task: Mapped["Task | None"] = relationship(
-        "Task", foreign_keys=[task_id], lazy="selectin"
+        "Task", foreign_keys=[task_id], lazy="raise_on_sql"
     )
+
+
+# Notification center: a user's notifications newest first (keyset paging on
+# created_at, id), and the same for unread ones only. Defined after the class so
+# the columns can carry DESC and the partial condition. On existing databases they
+# are built by migrations/add_user_notifications_indexes_concurrently.sql.
+Index(
+    "ix_user_notifications_user_created",
+    UserNotification.user_id, UserNotification.created_at.desc(), UserNotification.id.desc(),
+)
+Index(
+    "ix_user_notifications_user_unread",
+    UserNotification.user_id, UserNotification.created_at.desc(), UserNotification.id.desc(),
+    postgresql_where=UserNotification.read_at.is_(None),
+    sqlite_where=UserNotification.read_at.is_(None),
+)
