@@ -39,7 +39,7 @@ const LegalProceedings = React.lazy(() => import('./pages/LegalProceedings'))
 const LegalProceedingPage = React.lazy(() => import('./pages/LegalProceedingPage'))
 const TaskCalendar = React.lazy(() => import('./pages/TaskCalendar'))
 const UserPermissions = React.lazy(() => import('./pages/UserPermissions'))
-const Notifications = React.lazy(() => import('./pages/Notifications'))
+const NotificationCenter = React.lazy(() => import('./pages/NotificationCenter'))
 const UserGuide = React.lazy(() => import('./pages/UserGuide'))
 const InventoryLayout = React.lazy(() => import('./pages/inventory/InventoryLayout'))
 const InventoryDashboard = React.lazy(() => import('./pages/inventory/InventoryDashboard'))
@@ -63,6 +63,8 @@ import { cn } from './lib/utils'
 import { avatarUrl } from './lib/api'
 import { AccessDenied, NoPermissions } from './components/ui/AccessDenied'
 import AssistantChat from './components/AssistantChat'
+import NotificationToastQueue from './components/notification-center/NotificationToastQueue'
+import { useBackgroundPolling } from './hooks/useBackgroundPolling'
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const dispatch = useDispatch()
@@ -208,6 +210,7 @@ function AppContent() {
   return (
     <InventorySettingsProvider>
     <div className="min-h-screen h-screen flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
+      <SignedInBackground />
       {/* Desktop Sidebar */}
       <div className="hidden lg:block">
         <Sidebar
@@ -307,7 +310,7 @@ function AppContent() {
                 <Route path="transfers" element={<TransfersPage />} />
                 <Route path="returns" element={<ReturnsPage />} />
               </Route>
-              <Route path="/notifications" element={<Navigate to="/task-management?tab=messages" replace />} />
+              <Route path="/notifications" element={<RequireAuth><NotificationCenter /></RequireAuth>} />
               <Route path="/suppliers/:supplierId/documents" element={<RequireAuth><RequirePermission resource="supplier"><SupplierDocuments /></RequirePermission></RequireAuth>} />
               <Route path="/users" element={<RequireAuth><UserManagement /></RequireAuth>} />
               <Route path="/users/:userId/permissions" element={<RequireAuth><UserPermissions /></RequireAuth>} />
@@ -336,4 +339,11 @@ export default function App() {
       <AppContent />
     </ThemeProvider>
   )
+}
+
+/** Signed in only: the app's one background poll (task-chat badge, notification
+ * count and new notifications) and the notification toasts. */
+function SignedInBackground() {
+  useBackgroundPolling()
+  return <NotificationToastQueue />
 }

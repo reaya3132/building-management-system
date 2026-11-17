@@ -27,7 +27,7 @@ import type {
   TaskMessageType,
   EventType,
 } from '../../pages/TaskCalendar'
-import { EVENT_TYPE_LABELS, isAllDayTask, describeRecurrence } from '../../pages/TaskCalendar'
+import { EVENT_TYPE_LABELS, isAllDayTask, describeRecurrence } from '../../lib/taskDisplay'
 import { PermissionGuard } from '../ui/PermissionGuard'
 import TaskChecklist from './TaskChecklist'
 import AttachmentView from './AttachmentView'
@@ -74,7 +74,18 @@ export interface TaskDetailModalProps {
   onEdit?: (task: Task) => void
 }
 
-export default function TaskDetailModal({
+export interface TaskDetailPanelProps extends TaskDetailModalProps {
+  /** Shown inside another page (the notification center) rather than in a modal:
+   * actions that open UI outside that page — editing, which opens the edit form
+   * modal of the task screens — are not offered. Viewing files keeps its viewer
+   * overlay; the user stays on the page. */
+  embedded?: boolean
+}
+
+/** The task detail content and all its actions (status, chat, files, checklist,
+ * acknowledge, remind, archive, delete). TaskDetailModal shows it in a modal;
+ * the notification center shows it inline with `embedded`. */
+export function TaskDetailPanel({
   taskId,
   initialTask,
   onClose,
@@ -82,7 +93,8 @@ export default function TaskDetailModal({
   onTaskDeleted,
   onTaskArchived,
   onEdit,
-}: TaskDetailModalProps) {
+  embedded = false,
+}: TaskDetailPanelProps) {
   const me = useSelector((state: RootState) => state.auth.me)
   const isAdmin = me?.role === 'Admin'
   const [task, setTask] = useState<Task | null>(initialTask ?? null)
@@ -347,10 +359,10 @@ export default function TaskDetailModal({
   if (!taskId) return null
 
   const effectiveTask = task ?? (initialTask && initialTask.id === taskId ? initialTask : null)
-  const showEditButton = typeof onEdit === 'function'
+  const showEditButton = !embedded && typeof onEdit === 'function'
 
   return (
-    <Modal isOpen={!!taskId} onClose={onClose} title="פרטי משימה">
+    <>
       {taskLoading && !effectiveTask ? (
         <p className="text-sm text-gray-500 dark:text-gray-400 py-4">טוען...</p>
       ) : !effectiveTask ? (
@@ -897,6 +909,15 @@ export default function TaskDetailModal({
           </div>
         </div>
       )}
+    </>
+  )
+}
+
+export default function TaskDetailModal(props: TaskDetailModalProps) {
+  if (!props.taskId) return null
+  return (
+    <Modal isOpen={!!props.taskId} onClose={props.onClose} title="פרטי משימה">
+      <TaskDetailPanel {...props} />
     </Modal>
   )
 }

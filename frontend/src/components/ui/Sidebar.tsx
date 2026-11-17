@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Link, useLocation } from 'react-router-dom'
 import {
@@ -28,10 +28,8 @@ import {
 import { useTheme } from '../../contexts/ThemeContext'
 import { useInventorySettings } from '../../contexts/InventorySettingsContext'
 import { cn } from '../../lib/utils'
-import api from '../../lib/api'
-import { useSelector, useDispatch } from 'react-redux'
-import type { RootState, AppDispatch } from '../../store'
-import { fetchUnreadCount } from '../../store/slices/notificationsSlice'
+import { useSelector } from 'react-redux'
+import type { RootState } from '../../store'
 import type { Permission } from '../../store/slices/permissionsSlice'
 import { Logo } from './Logo'
 
@@ -58,6 +56,13 @@ const ALL_NAVIGATION_ITEMS: NavigationItem[] = [
     icon: LayoutDashboard,
     description: 'סקירה כללית של הפרויקטים',
     permission: { resource: 'dashboard' }
+  },
+  {
+    // Every signed-in user's own notifications: no permission needed.
+    name: 'מרכז עדכונים',
+    href: '/notifications',
+    icon: Bell,
+    description: 'כל העדכונים וההתראות שלך',
   },
   {
     name: 'פרויקטים',
@@ -163,54 +168,39 @@ function filterNavigationItems(
 }
 
 /**
- * Total unread task-chat messages for the current user, polled in the background
- * (~30s) and refreshed on tab focus. Drives the red badge on the "ניהול משימות"
- * nav item so a new message is visible from anywhere in the app.
+ * Total unread task-chat messages for the current user — the red badge on the
+ * "ניהול משימות" nav item. Kept fresh by the app's one background poll
+ * (useBackgroundPolling: ~30s and on tab focus); both sidebars read it here.
  */
 function useTaskUnreadTotal(): number {
-  const me = useSelector((state: RootState) => state.auth.me)
-  const [total, setTotal] = useState(0)
-  useEffect(() => {
-    if (!me) {
-      setTotal(0)
-      return
-    }
-    let active = true
-    const load = async () => {
-      try {
-        const { data } = await api.get<{ total_unread: number }>('/tasks/unread-summary')
-        if (active) setTotal(data.total_unread ?? 0)
-      } catch {
-        /* ignore transient failures */
-      }
-    }
-    void load()
-    const interval = setInterval(() => { if (!document.hidden) void load() }, 30_000)
-    const onVisible = () => { if (!document.hidden) void load() }
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      active = false
-      clearInterval(interval)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
-  }, [me])
-  return total
+  return useSelector((state: RootState) => state.notifications.taskChatUnread)
+}
+
+/** Unread notifications of every module (the server counts up to 1000). */
+function useNotificationUnread(): number {
+  return useSelector((state: RootState) => state.notifications.unreadCount)
+}
+
+/** The nav badge text: task chat (99+, as before) or notifications (999+). */
+export function navBadge(href: string, taskUnread: number, notificationUnread: number): string | null {
+  if (href === '/task-management' && taskUnread > 0) return taskUnread > 99 ? '99+' : String(taskUnread)
+  if (href === '/notifications' && notificationUnread > 0) {
+    return notificationUnread > 999 ? '999+' : String(notificationUnread)
+  }
+  return null
 }
 
 export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
   const location = useLocation()
-  const dispatch = useDispatch<AppDispatch>()
   const { theme, toggleTheme } = useTheme()
   const me = useSelector((state: RootState) => state.auth.me)
   const taskUnread = useTaskUnreadTotal()
+  const notificationUnread = useNotificationUnread()
   const permissions = useSelector((state: RootState) => state.permissions.permissions)
   const { open: openInventorySettings } = useInventorySettings()
   const navigationItems = filterNavigationItems(ALL_NAVIGATION_ITEMS, me?.role, permissions)
     .map(item => item.href === '/inventory' ? { ...item, onSettingsClick: openInventorySettings } : item)
 
-  useEffect(() => {
-    if (me) dispatch(fetchUnreadCount())
-  }, [dispatch, me])
 
   return (
     <motion.aside
@@ -303,9 +293,9 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
                     "w-5 h-5",
                     isActive ? "text-blue-600 dark:text-blue-400" : "text-gray-500 dark:text-gray-400"
                   )} />
-                  {item.href === '/task-management' && taskUnread > 0 && (
+                  {navBadge(item.href, taskUnread, notificationUnread) && (
                     <span className="absolute -top-1 -left-1 min-w-[1.25rem] h-5 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-medium">
-                      {taskUnread > 99 ? '99+' : taskUnread}
+                      {navBadge(item.href, taskUnread, notificationUnread)}
                     </span>
                   )}
                 </span>
@@ -406,6 +396,7 @@ export function MobileSidebar({ isOpen, onClose }: MobileSidebarProps) {
   const { theme, toggleTheme } = useTheme()
   const me = useSelector((state: RootState) => state.auth.me)
   const taskUnread = useTaskUnreadTotal()
+  const notificationUnread = useNotificationUnread()
   const permissions = useSelector((state: RootState) => state.permissions.permissions)
   const { open: openInventorySettings } = useInventorySettings()
   const navigationItems = filterNavigationItems(ALL_NAVIGATION_ITEMS, me?.role, permissions)
@@ -481,9 +472,9 @@ export function MobileSidebar({ isOpen, onClose }: MobileSidebarProps) {
                           "w-5 h-5",
                           isActive ? "text-blue-600 dark:text-blue-400" : "text-gray-500 dark:text-gray-400"
                         )} />
-                        {item.href === '/task-management' && taskUnread > 0 && (
+                        {navBadge(item.href, taskUnread, notificationUnread) && (
                           <span className="absolute -top-1 -left-1 min-w-[1.25rem] h-5 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-medium">
-                            {taskUnread > 99 ? '99+' : taskUnread}
+                            {navBadge(item.href, taskUnread, notificationUnread)}
                           </span>
                         )}
                       </span>

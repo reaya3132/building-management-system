@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from functools import lru_cache
 from pydantic import BaseModel, Field, model_validator, ConfigDict
 import os
@@ -30,6 +31,28 @@ def _normalize_database_uri(uri: str) -> str:
     return uri
 
 
+def parse_notification_center_start(raw: str | None) -> datetime | None:
+    """NOTIFICATION_CENTER_START: the fixed, global moment the notification center
+    starts from (notifications created before it are not shown there; they stay in
+    the database). An ISO-8601 time WITH a zone, e.g. ``2026-11-20T06:00:00Z``;
+    returned as naive UTC, the way created_at is stored. Unset / empty: None.
+
+    It is a configured value, never derived from the clock or the process start, so
+    restarts, redeploys and more instances all use the same moment.
+    """
+    if raw is None or not raw.strip():
+        return None
+    text = raw.strip()
+    try:
+        value = datetime.fromisoformat(text[:-1] + "+00:00" if text[-1] in "zZ" else text)
+    except ValueError:
+        raise ValueError(f"NOTIFICATION_CENTER_START is not an ISO-8601 time: {raw!r}") from None
+    if value.tzinfo is None:
+        raise ValueError(
+            f"NOTIFICATION_CENTER_START must include a time zone (e.g. 2026-11-20T06:00:00Z): {raw!r}")
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 class Settings(BaseModel):
     API_V1_STR: str = "/api/v1"
     SQLALCHEMY_DATABASE_URI: str = Field(
@@ -42,6 +65,24 @@ class Settings(BaseModel):
     @property
     def is_production(self) -> bool:
         return os.getenv("ENVIRONMENT", "development").lower() == "production"
+
+    # The notification center's start (see parse_notification_center_start).
+    # An invalid value fails here, at startup.
+    NOTIFICATION_CENTER_START: datetime | None = Field(
+        default_factory=lambda: parse_notification_center_start(os.getenv("NOTIFICATION_CENTER_START")))
+
+    @property
+    def requires_notification_center_start(self) -> bool:
+        """Production (ENVIRONMENT=production) or any Render service (Render sets
+        RENDER=true): there the start must be configured — the server refuses to
+        start without it rather than show every old notification."""
+        return self.is_production or os.getenv("RENDER", "").lower() == "true"
+
+    def validate_notification_center(self) -> None:
+        if self.NOTIFICATION_CENTER_START is None and self.requires_notification_center_start:
+            raise ValueError(
+                "NOTIFICATION_CENTER_START is not set. Set it (UTC, e.g. 2026-11-20T06:00:00Z) "
+                "to the moment the notification center starts; older notifications are not shown.")
 
     @property
     def external_alerts_enabled(self) -> bool:

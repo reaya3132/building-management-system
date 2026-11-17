@@ -76,6 +76,7 @@ from backend.services.notification_service import (
     _build_message_preview,
     create_task_assignment_notifications,
     create_task_message_notifications,
+    create_task_archived_notifications,
     create_task_reminder,
     create_closure_approval_notification,
 )
@@ -626,8 +627,12 @@ async def archive_task(
         raise HTTPException(status_code=400, detail="המשימה כבר נמצאת בארכיון")
     if not _can_manage_task(task, user):
         raise HTTPException(status_code=403, detail="אין לך הרשאה לארכב משימה זו")
-    task.is_archived = True
-    task.archived_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Conditional: a double click / concurrent request finds it archived and gets
+    # the same 400 — and creates no second set of notifications.
+    archived_at = await repo.archive_if_active(task.id, TaskKind.GENERAL)
+    if archived_at is None:
+        raise HTTPException(status_code=400, detail="המשימה כבר נמצאת בארכיון")
+    await create_task_archived_notifications(db, task, user, archived_at)
     await repo.update(task)
     updated = await repo.get(task.id)
     return _task_to_out(updated)

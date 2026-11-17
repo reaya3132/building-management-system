@@ -274,6 +274,24 @@ class TaskRepository:
         result = await self.db.execute(q)
         return list(result.unique().scalars().all())
 
+    async def archive_if_active(self, task_id: int, kind: str) -> datetime | None:
+        """Archive the task only if it is not archived yet, in one conditional UPDATE.
+
+        Returns the archived_at written, or None when nothing changed (already
+        archived, or another request archived it first: on PostgreSQL a concurrent
+        request waits for the row lock and then matches no row). Only the request
+        that actually archived gets a timestamp, so only it creates notifications.
+        """
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        result = await self.db.execute(
+            update(Task)
+            .where(Task.id == task_id, Task.task_kind == kind, Task.is_archived == False)  # noqa: E712
+            .values(is_archived=True, archived_at=now)
+            .returning(Task.archived_at)
+            .execution_options(synchronize_session=False)
+        )
+        return result.scalar_one_or_none()
+
     async def archive_completed_tasks(self) -> int:
         today_midnight = datetime.combine(date.today(), datetime.min.time())
         now = datetime.now(timezone.utc).replace(tzinfo=None)
