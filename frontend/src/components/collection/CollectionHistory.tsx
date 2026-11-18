@@ -22,7 +22,8 @@ export const COLLECTION_EVENT_LABELS: Record<string, string> = {
   reopened: 'המשימה נפתחה מחדש',
   archived: 'המשימה הועברה לארכיון',
   unarchived: 'המשימה שוחזרה מהארכיון',
-  adjustment_added: 'נוספה תוספת לסכום',
+  adjustment_added: 'שינוי בסכום',
+  initial_amount_changed: 'הסכום ההתחלתי שונה',
   ledger_item_added: 'נוסף פריט',
   ledger_item_updated: 'פריט עודכן',
   ledger_item_archived: 'פריט הועבר לארכיון',
@@ -55,8 +56,13 @@ export function describeCollectionEvent(entry: CollectionAuditEntry): string | n
       const text = `${formatMonth(String(before?.billing_month))} ← ${formatMonth(String(after?.billing_month))}`
       return d.reason ? `${text} · ${d.reason}` : text
     }
-    case 'adjustment_added':
-      return after?.note ? `${formatILS(after.amount as string)} · ${after.note}` : formatILS(after?.amount as string)
+    case 'adjustment_added': {
+      const amount = Number(after?.amount ?? 0)
+      const text = amount < 0 ? `הפחתה ${formatILS(-amount)}` : `תוספת ${formatILS(amount)}`
+      return after?.note ? `${text} · ${after.note}` : text
+    }
+    case 'initial_amount_changed':
+      return `${formatILS(before?.initial_amount as string)} ← ${formatILS(after?.initial_amount as string)}`
     case 'ledger_item_added':
       return `${after?.subject ?? ''} · ${formatILS(after?.amount as string)}`
     case 'ledger_item_archived':

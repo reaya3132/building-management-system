@@ -74,6 +74,33 @@ export function parseMoneyInput(raw: string): string | null {
   return text
 }
 
+/** A server decimal string ("-12.30") as integer agorot, avoiding float sums. */
+export function toAgorot(amount: string | number | null | undefined): number {
+  const value = Number(amount ?? 0)
+  return Number.isFinite(value) ? Math.round(value * 100) : 0
+}
+
+export type AdjustmentKind = 'addition' | 'reduction'
+
+/** The signed server amount for a positive typed amount: a reduction is negative. */
+export function signedAdjustment(positive: string, kind: AdjustmentKind): string {
+  return kind === 'reduction' ? `-${positive}` : positive
+}
+
+/** The required detail of an addition / reduction, trimmed; null when empty or whitespace only. */
+export function normalizeAdjustmentNote(raw: string): string | null {
+  const text = raw.trim()
+  return text ? text : null
+}
+
+/**
+ * Client-side mirror of the server rule (the server decides): the total
+ * (initial amount + all adjustments) may be 0 but never negative.
+ */
+export function totalStaysNonNegative(currentTotal: string, deltaAgorot: number): boolean {
+  return toAgorot(currentTotal) + deltaAgorot >= 0
+}
+
 // ── billing months (YYYY-MM) ──────────────────────────────────────────────────
 
 export function currentMonth(today: Date = new Date()): string {
@@ -114,6 +141,7 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   item_archived: 'הפריט כבר הועבר לארכיון.',
   project_not_active: 'הפרויקט שנבחר אינו פעיל.',
   invalid_month: 'חודש לא תקין.',
+  total_negative: 'הסכום הכולל לגבייה לא יכול להיות שלילי.',
 }
 
 const STATUS_MESSAGES: Record<number, string> = {

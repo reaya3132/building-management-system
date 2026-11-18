@@ -58,6 +58,8 @@ from backend.schemas.collection_task import (
     CollectionTaskPage,
     CollectionTaskUpdate,
     CollectionUnreadSummary,
+    InitialAmountResult,
+    InitialAmountUpdate,
     LedgerItemCreate,
     LedgerItemOut,
     LedgerItemResult,
@@ -421,6 +423,15 @@ async def add_collection_adjustment(task_id: int, data: AdjustmentCreate, db: DB
     adjustment = await CollectionTaskService(db, user).add_adjustment(task_id, data)
     total = await CollectionTaskRepository(db).total_for(task_id)
     return AdjustmentResult(adjustment=_adjustment_out(adjustment), total_amount=total)
+
+
+@router.patch("/{task_id}/initial-amount", response_model=InitialAmountResult)
+async def update_collection_initial_amount(task_id: int, data: InitialAmountUpdate, db: DBSessionDep,
+                                           user=Depends(get_current_user)):
+    await CollectionTaskService(db, user).update_initial_amount(task_id, data)
+    repo = CollectionTaskRepository(db)
+    details = await repo.get_details(task_id)
+    return InitialAmountResult(initial_amount=details.initial_amount, total_amount=await repo.total_for(task_id))
 
 
 @router.post("/{task_id}/ledger-items", response_model=LedgerItemResult, status_code=201)

@@ -5,8 +5,9 @@ title, description, status, assignees, chat and files stay on the shared task
 tables. Only the collection-specific data lives here:
 
 - ``CollectionTaskDetails``  1:1 with the task: type, project, billing month and,
-  for ``single``, the immutable initial amount.
-- ``CollectionAmountAdjustment``  append-only positive additions (``single`` only).
+  for ``single``, the (positive, editable) initial amount.
+- ``CollectionAmountAdjustment``  append-only additions (> 0) and reductions (< 0),
+  ``single`` only. The service keeps the task total >= 0.
 - ``CollectionLedgerItem``  subject + amount lines (``ledger`` only), archived
   instead of deleted.
 
@@ -66,6 +67,7 @@ class CollectionEvent:
     ARCHIVED = "archived"
     UNARCHIVED = "unarchived"
     ADJUSTMENT_ADDED = "adjustment_added"
+    INITIAL_AMOUNT_CHANGED = "initial_amount_changed"
     LEDGER_ITEM_ADDED = "ledger_item_added"
     LEDGER_ITEM_UPDATED = "ledger_item_updated"
     LEDGER_ITEM_ARCHIVED = "ledger_item_archived"
@@ -117,10 +119,11 @@ class CollectionTaskDetails(Base):
 
 
 class CollectionAmountAdjustment(Base):
-    """A positive addition to a ``single`` collection task. Append-only."""
+    """An addition (> 0) or reduction (< 0) to a ``single`` collection task.
+    Append-only; the service rejects one that would make the total negative."""
     __tablename__ = "collection_amount_adjustments"
     __table_args__ = (
-        CheckConstraint("amount > 0", name="ck_caa_amount_positive"),
+        CheckConstraint("amount <> 0", name="ck_caa_amount_nonzero"),
         Index("ix_caa_task_id", "task_id"),
     )
 

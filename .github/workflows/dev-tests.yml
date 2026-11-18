@@ -140,8 +140,10 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/bms_test
           JWT_SECRET_KEY: test-secret-key-for-ci
           ENVIRONMENT: test
+          # Collection PostgreSQL tests create (and drop) their own temporary database here.
+          TEST_POSTGRES_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
         run: |
-          pytest tests/test_integration.py -v -m integration
+          pytest tests/test_integration.py tests/test_collection_postgres_integration.py -v -m integration
 
   test-summary:
     name: Test Summary

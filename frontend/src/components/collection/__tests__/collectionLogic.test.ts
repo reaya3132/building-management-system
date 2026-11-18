@@ -3,9 +3,13 @@ import {
   collectionErrorMessage,
   currentMonth,
   formatILS,
+  normalizeAdjustmentNote,
   parseMoneyInput,
   shiftMonth,
+  signedAdjustment,
+  toAgorot,
   toMonthKey,
+  totalStaysNonNegative,
 } from '../collectionUtils'
 import { validateCollectionForm } from '../CreateCollectionTaskModal'
 import { collectionTaskAbilities } from '../CollectionTaskDetailModal'
@@ -107,6 +111,36 @@ describe('project options', () => {
   })
 })
 
+describe('single adjustments (additions / reductions)', () => {
+  it('signs a typed positive amount by the chosen kind', () => {
+    expect(signedAdjustment('50.25', 'addition')).toBe('50.25')
+    expect(signedAdjustment('50.25', 'reduction')).toBe('-50.25')
+  })
+
+  it('converts amounts to integer agorot without float drift', () => {
+    expect(toAgorot('0.10') + toAgorot('0.20')).toBe(30)
+    expect(toAgorot('-12.30')).toBe(-1230)
+    expect(toAgorot(null)).toBe(0)
+  })
+
+  it('allows a total of exactly 0 but never below it', () => {
+    expect(totalStaysNonNegative('100.00', toAgorot('-100.00'))).toBe(true)
+    expect(totalStaysNonNegative('100.00', toAgorot('-100.01'))).toBe(false)
+    expect(totalStaysNonNegative('0.00', toAgorot('5'))).toBe(true)
+  })
+
+  it('requires a non-blank detail (trimmed)', () => {
+    expect(normalizeAdjustmentNote('  קנס  ')).toBe('קנס')
+    expect(normalizeAdjustmentNote('')).toBeNull()
+    expect(normalizeAdjustmentNote(' \t\n ')).toBeNull()
+  })
+
+  it('translates the server total_negative code', () => {
+    const error = { response: { status: 422, data: { detail: { code: 'total_negative', message: 'x' } } } }
+    expect(collectionErrorMessage(error, 'fallback')).toMatch(/שלילי/)
+  })
+})
+
 describe('history descriptions', () => {
   it('describes status and amount events', () => {
     const entry = (action: string, details: Record<string, unknown>) =>
@@ -114,6 +148,11 @@ describe('history descriptions', () => {
     expect(describeCollectionEvent(entry('reopened', { before: { status: 'completed' }, after: { status: 'pending' } })))
       .toBe('נסגרה ← פתוחה')
     expect(describeCollectionEvent(entry('adjustment_added', { after: { amount: '50.00', note: 'קנס' } }))).toContain('קנס')
+    expect(describeCollectionEvent(entry('adjustment_added', { after: { amount: '50.00' } }))).toMatch(/^תוספת/)
+    expect(describeCollectionEvent(entry('adjustment_added', { after: { amount: '-20.00' } }))).toMatch(/^הפחתה .*20\.00/)
+    expect(describeCollectionEvent(entry('initial_amount_changed', {
+      before: { initial_amount: '1000.00' }, after: { initial_amount: '800.00' },
+    }))).toMatch(/1,000\.00.*←.*800\.00/)
     expect(describeCollectionEvent(entry('message_edited', { after: { preview: 'שלום' } }))).toBe('שלום')
   })
 })
