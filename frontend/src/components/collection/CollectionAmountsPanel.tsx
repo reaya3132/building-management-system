@@ -1,10 +1,21 @@
 import { useState } from 'react'
-import { Lock, Plus } from 'lucide-react'
+import { Check, Lock, Pencil, Plus, X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { CollectionAPI, type CollectionTaskDetail } from '../../lib/collectionApi'
 import LedgerItems, { INVALID_AMOUNT } from '../ledger/LedgerItems'
 import { ErrorBanner } from './CollectionModal'
-import { FIELD_CLASS, collectionErrorMessage, formatDateTime, formatILS, parseMoneyInput } from './collectionUtils'
+import {
+  FIELD_CLASS,
+  collectionErrorMessage,
+  formatDateTime,
+  formatILS,
+  normalizeAdjustmentNote,
+  parseMoneyInput,
+  signedAdjustment,
+  toAgorot,
+  totalStaysNonNegative,
+  type AdjustmentKind,
+} from './collectionUtils'
 
 interface CollectionAmountsPanelProps {
   task: CollectionTaskDetail
@@ -17,8 +28,8 @@ interface CollectionAmountsPanelProps {
 }
 
 /**
- * Amounts of a collection task: the immutable initial amount plus append-only
- * adjustments ("single"), or the editable ledger items ("ledger"). Items are
+ * Amounts of a collection task: the editable (positive) initial amount plus
+ * append-only additions/reductions ("single"; the total never goes below 0), or the editable ledger items ("ledger"). Items are
  * archived, never deleted, as the server requires.
  */
 export default function CollectionAmountsPanel({ task, canChange, lockReason, onChanged }: CollectionAmountsPanelProps) {
@@ -72,43 +83,133 @@ interface SectionProps {
   setError: (message: string | null) => void
 }
 
+const TOTAL_NEGATIVE = 'הסכום הכולל לגבייה לא יכול להיות שלילי.'
+const NOTE_REQUIRED = 'יש להזין פירוט לתוספת או להפחתה.'
+
 function SingleAmounts({ task, canChange, busy, run, setError }: SectionProps) {
+  const [kind, setKind] = useState<AdjustmentKind>('addition')
   const [amount, setAmount] = useState('')
   const [note, setNote] = useState('')
+  const [editingInitial, setEditingInitial] = useState(false)
+  const [initialDraft, setInitialDraft] = useState('')
 
   const add = async () => {
     const value = parseMoneyInput(amount)
     if (!value) { setError(INVALID_AMOUNT); return }
-    if (await run(() => CollectionAPI.addAdjustment(task.id, value, note), 'הוספת התוספת נכשלה')) {
+    const detail = normalizeAdjustmentNote(note)
+    if (!detail) { setError(NOTE_REQUIRED); return }
+    const signed = signedAdjustment(value, kind)
+    // Pre-check only; the server re-checks under a row lock and decides.
+    if (!totalStaysNonNegative(task.total_amount, toAgorot(signed))) { setError(TOTAL_NEGATIVE); return }
+    const failure = kind === 'reduction' ? 'הוספת ההפחתה נכשלה' : 'הוספת התוספת נכשלה'
+    if (await run(() => CollectionAPI.addAdjustment(task.id, signed, detail), failure)) {
       setAmount('')
       setNote('')
+    }
+  }
+
+  const startEditInitial = () => {
+    setInitialDraft(task.initial_amount ?? '')
+    setEditingInitial(true)
+    setError(null)
+  }
+
+  const saveInitial = async () => {
+    const value = parseMoneyInput(initialDraft)
+    if (!value) { setError(INVALID_AMOUNT); return }
+    const delta = toAgorot(value) - toAgorot(task.initial_amount)
+    if (!totalStaysNonNegative(task.total_amount, delta)) { setError(TOTAL_NEGATIVE); return }
+    if (await run(() => CollectionAPI.updateInitialAmount(task.id, value), 'עדכון הסכום ההתחלתי נכשל')) {
+      setEditingInitial(false)
     }
   }
 
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700">
-        <div className="flex items-center justify-between px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
           <span className="text-sm text-gray-600 dark:text-gray-300">סכום התחלתי</span>
-          <span className="text-sm font-semibold text-gray-900 dark:text-white tabular-nums">{formatILS(task.initial_amount)}</span>
-        </div>
-        {task.adjustments.map((adj) => (
-          <div key={adj.id} className="flex items-start justify-between gap-3 px-3 py-2.5">
-            <div className="min-w-0">
-              <p className="text-sm text-gray-700 dark:text-gray-200 break-words">{adj.note || 'תוספת'}</p>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                {adj.created_by?.full_name ?? ''} · {formatDateTime(adj.created_at)}
-              </p>
+          {editingInitial ? (
+            <div className="flex items-center gap-1.5">
+              <input
+                className={cn(FIELD_CLASS, 'w-32 py-1.5')}
+                inputMode="decimal"
+                dir="ltr"
+                value={initialDraft}
+                onChange={(e) => setInitialDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveInitial(); if (e.key === 'Escape') setEditingInitial(false) }}
+                aria-label="סכום התחלתי חדש"
+                autoFocus
+              />
+              <button type="button" onClick={saveInitial} disabled={busy || !initialDraft.trim()}
+                className="p-1.5 rounded-lg text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-900/30 disabled:opacity-60"
+                aria-label="שמור סכום התחלתי">
+                <Check className="w-4 h-4" />
+              </button>
+              <button type="button" onClick={() => setEditingInitial(false)} disabled={busy}
+                className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-60"
+                aria-label="ביטול עריכה">
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums whitespace-nowrap">
-              +{formatILS(adj.amount)}
-            </span>
-          </div>
-        ))}
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-semibold text-gray-900 dark:text-white tabular-nums">{formatILS(task.initial_amount)}</span>
+              {canChange && (
+                <button type="button" onClick={startEditInitial} disabled={busy}
+                  className="p-1.5 rounded-lg text-gray-500 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-60"
+                  aria-label="ערוך סכום התחלתי">
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        {task.adjustments.map((adj) => {
+          const reduction = Number(adj.amount) < 0
+          return (
+            <div key={adj.id} className="flex items-start justify-between gap-3 px-3 py-2.5">
+              <div className="min-w-0">
+                <p className="text-sm text-gray-700 dark:text-gray-200 break-words">{adj.note || (reduction ? 'הפחתה' : 'תוספת')}</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {adj.created_by?.full_name ?? ''} · {formatDateTime(adj.created_at)}
+                </p>
+              </div>
+              <span
+                className={cn(
+                  'text-sm font-semibold tabular-nums whitespace-nowrap',
+                  reduction ? 'text-red-600 dark:text-red-400' : 'text-emerald-700 dark:text-emerald-400'
+                )}
+                dir="ltr"
+              >
+                {reduction ? '−' : '+'}{formatILS(Math.abs(Number(adj.amount)))}
+              </span>
+            </div>
+          )
+        })}
       </div>
 
       {canChange && (
         <div className="flex flex-col sm:flex-row gap-2">
+          <div role="radiogroup" aria-label="סוג השינוי" className="inline-flex rounded-xl border border-gray-300 dark:border-gray-600 p-0.5 self-start sm:self-auto">
+            {([['addition', 'תוספת'], ['reduction', 'הפחתה']] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={kind === value}
+                onClick={() => setKind(value)}
+                className={cn(
+                  'px-3 py-2 text-sm font-medium rounded-lg',
+                  kind === value
+                    ? value === 'reduction' ? 'bg-red-600 text-white' : 'bg-emerald-600 text-white'
+                    : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <input
             className={cn(FIELD_CLASS, 'sm:w-36')}
             inputMode="decimal"
@@ -116,22 +217,24 @@ function SingleAmounts({ task, canChange, busy, run, setError }: SectionProps) {
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="0.00"
-            aria-label="סכום התוספת"
+            aria-label={kind === 'reduction' ? 'סכום ההפחתה' : 'סכום התוספת'}
           />
           <input
             className={cn(FIELD_CLASS, 'flex-1')}
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="הערה (לא חובה)"
-            aria-label="הערה לתוספת"
+            placeholder="פירוט (חובה)"
+            required
+            aria-required="true"
+            aria-label="פירוט השינוי"
           />
           <button
             type="button"
             onClick={add}
-            disabled={busy || !amount.trim()}
+            disabled={busy || !amount.trim() || !normalizeAdjustmentNote(note)}
             className="inline-flex items-center justify-center gap-1 rounded-xl px-4 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60"
           >
-            <Plus className="w-4 h-4" /> הוסף תוספת
+            <Plus className="w-4 h-4" /> {kind === 'reduction' ? 'הוסף הפחתה' : 'הוסף תוספת'}
           </button>
         </div>
       )}
