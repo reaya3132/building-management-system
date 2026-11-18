@@ -21,6 +21,7 @@ import { cn } from '../../lib/utils'
 import { CollectionAPI, type CollectionStatus, type CollectionTaskDetail } from '../../lib/collectionApi'
 import AssigneePicker from '../task-management/AssigneePicker'
 import AttachmentView from '../task-management/AttachmentView'
+import { keepFileUrls } from '../../lib/stableFileUrls'
 import SearchableSelect from '../task-management/SearchableSelect'
 import CollectionAmountsPanel from './CollectionAmountsPanel'
 import CollectionChat from './CollectionChat'
@@ -167,7 +168,8 @@ function useCollectionTaskDetail(taskId: number | null, onChanged: () => void, r
         const fresh = await CollectionAPI.get(taskId)
         // The user may have started editing while the request was out.
         if (active && canRefresh()) {
-          setTask(fresh)
+          // Files already shown keep their (still valid) signed URLs.
+          setTask((prev) => (prev ? keepFileUrls([prev], [fresh])[0] : fresh))
           setHistoryKey((k) => k + 1)
         }
       } catch {

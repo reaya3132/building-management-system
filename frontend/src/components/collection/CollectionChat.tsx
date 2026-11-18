@@ -6,6 +6,7 @@ import api, { avatarUrl, fileAttachmentUrl } from '../../lib/api'
 import { cn } from '../../lib/utils'
 import type { TaskMessageType } from '../../pages/TaskCalendar'
 import AttachmentView from '../task-management/AttachmentView'
+import { keepFileUrls } from '../../lib/stableFileUrls'
 import RecordButton from '../task-management/RecordButton'
 import { collectionErrorMessage, formatDateTime } from './collectionUtils'
 
@@ -45,7 +46,8 @@ export default function CollectionChat({ taskId }: CollectionChatProps) {
         params: { _t: Date.now() },
         headers: { 'Cache-Control': 'no-cache' },
       })
-      setMessages(data)
+      // A file already shown keeps its (still valid) signed URL; new files take theirs.
+      setMessages((prev) => keepFileUrls(prev, data))
       setError(null)
     } catch (err) {
       if (!silent) setError(collectionErrorMessage(err, 'שגיאה בטעינת ההודעות'))

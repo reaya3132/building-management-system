@@ -13,6 +13,10 @@ interface DocumentViewerModalProps {
   isOpen: boolean
   document: DocumentToView | null
   onClose: () => void
+  /** The "open in a new window" / download links' URL, when it may be newer than
+   * the one displayed (a renewed signed URL): the shown document stays as it is,
+   * the links use the valid one. Default: the displayed file's URL. */
+  linkUrl?: string | null
 }
 
 function getFileExtension(filePath: string): string {
@@ -38,7 +42,7 @@ function isPdf(filePath: string): boolean {
   return getFileExtension(filePath) === 'pdf'
 }
 
-export default function DocumentViewerModal({ isOpen, document: doc, onClose }: DocumentViewerModalProps) {
+export default function DocumentViewerModal({ isOpen, document: doc, onClose, linkUrl }: DocumentViewerModalProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -98,15 +102,19 @@ export default function DocumentViewerModal({ isOpen, document: doc, onClose }: 
 
   const useViewEndpoint = Boolean(doc.id)
   const fileUrl = useViewEndpoint && blobUrl ? blobUrl : getFileUrl(doc.file_path)
+  const linkHref = linkUrl || fileUrl
   const isLoading = useViewEndpoint && loading
   const hasError = useViewEndpoint && error
 
+  // z-[80]: the viewer is always opened from other content — often from inside a
+  // dialog (ModalOverlay and the confirmation dialogs are z-[70]) — so it sits
+  // above every dialog layer, and below toasts / loading overlays (z-[100]).
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4"
+      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[80] p-4"
       onClick={onClose}
     >
       <motion.div
@@ -165,7 +173,7 @@ export default function DocumentViewerModal({ isOpen, document: doc, onClose }: 
                 />
                 <div className="absolute top-4 right-4 flex gap-2">
                   <a
-                    href={fileUrl}
+                    href={linkHref}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium flex items-center gap-2"
@@ -175,7 +183,7 @@ export default function DocumentViewerModal({ isOpen, document: doc, onClose }: 
                     פתח בחלון חדש
                   </a>
                   <a
-                    href={fileUrl}
+                    href={linkHref}
                     download
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium flex items-center gap-2"
                     onClick={(e) => e.stopPropagation()}
@@ -192,7 +200,7 @@ export default function DocumentViewerModal({ isOpen, document: doc, onClose }: 
                 לא ניתן להציג את הקובץ ישירות (סוג: {getFileExtension(doc.file_path).toUpperCase() || 'לא ידוע'})
               </p>
               <a
-                href={fileUrl}
+                href={linkHref}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
