@@ -101,12 +101,15 @@ export default function DocumentViewerModal({ isOpen, document: doc, onClose }: 
   const isLoading = useViewEndpoint && loading
   const hasError = useViewEndpoint && error
 
+  // z-[80]: the viewer is always opened from other content — often from inside a
+  // dialog (ModalOverlay and the confirmation dialogs are z-[70]) — so it sits
+  // above every dialog layer, and below toasts / loading overlays (z-[100]).
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4"
+      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[80] p-4"
       onClick={onClose}
     >
       <motion.div
