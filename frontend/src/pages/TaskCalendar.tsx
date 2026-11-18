@@ -737,7 +737,7 @@ export default function TaskCalendar({
     setLocalShowIslamicHolidays(me?.show_islamic_holidays ?? false)
   }, [me?.show_islamic_holidays])
 
-  // silent=true refreshes in the background (used by the unread-count poll): it
+  // silent=true refreshes in the background (the periodic refresh): it
   // keeps the current events and never shows a spinner or error toast, so the
   // calendar doesn't flicker or nag on a transient poll failure.
   const fetchTasks = useCallback(async (silent = false) => {
@@ -810,7 +810,7 @@ export default function TaskCalendar({
     fetchTasks()
   }, [fetchTasks])
 
-  // Poll in the background so a new reply's unread badge appears on the calendar
+  // Refresh in the background so other users' changes show up on the calendar
   // without a manual reload; also refresh the moment the tab regains focus.
   useEffect(() => {
     const interval = setInterval(() => {
@@ -968,11 +968,6 @@ export default function TaskCalendar({
       return
     }
     lastEventClickRef.current = { id: info.event.id, time: now }
-    // Opening the task reads its chat → clear the red unread dot immediately
-    // (the server also marks it read via GET /tasks/{id}).
-    if (task.has_unread_messages) {
-      setTasks(prev => prev.map(t => (t.id === task.id ? { ...t, has_unread_messages: false } : t)))
-    }
     setSelectedTask(task)
   }
 
@@ -1432,7 +1427,7 @@ export default function TaskCalendar({
                 borderColor: isAllDayTask ? color : 'transparent',
                 textColor: 'inherit',
                 classNames: [eventType === 'meeting' ? 'fc-event-meeting' : 'fc-event-task', isAllDayTask ? 'fc-event-task-no-time' : '', 'fc-event-outlook'],
-                extendedProps: { eventType, labels, taskId: t.id, isAllDayTask, status, isRecurring, color, hasUnread: t.has_unread_messages ?? false, unreadCount: t.unread_messages_count ?? 0 },
+                extendedProps: { eventType, labels, taskId: t.id, isAllDayTask, status, isRecurring, color },
               }
             })
           })
@@ -1531,10 +1526,6 @@ export default function TaskCalendar({
                   mobileView={mobileView}
                   onMobileViewChange={setMobileView}
                   onEventClick={(t) => {
-                    // פתיחת המשימה קוראת את השיח → נקה מיד את הנקודה האדומה (כמו בדסקטופ)
-                    if (t.has_unread_messages) {
-                      setTasks(prev => prev.map(x => (x.id === t.id ? { ...x, has_unread_messages: false } : x)))
-                    }
                     setSelectedTask(t)
                   }}
                   onCreateClick={() => setShowCreateModal(true)}
@@ -1756,8 +1747,6 @@ export default function TaskCalendar({
                   color?: string
                   isAllDayTask?: boolean
                   taskId?: number
-                  hasUnread?: boolean
-                  unreadCount?: number
                 }
                 const labels = ext.labels || []
                 const eventType = ext.eventType || 'task'
@@ -1800,11 +1789,7 @@ export default function TaskCalendar({
                     <div class="fc-outlook-bar" style="background:${color}"></div>
                     <div class="fc-outlook-body">
                       ${timeStr ? `<div class="fc-outlook-time">${typeIcon} ${esc(timeStr)}${recurIcon}</div>` : `<div class="fc-outlook-time">${typeIcon}${recurIcon}</div>`}
-                      <div class="fc-outlook-title">${(ext.unreadCount ?? 0) > 0
-                        ? `<span class="fc-outlook-unread" title="${ext.unreadCount} תגובות חדשות שלא נקראו" style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:9999px;background:#ef4444;color:#fff;font-size:10px;font-weight:700;line-height:1;margin-inline-end:4px;flex-shrink:0">${(ext.unreadCount ?? 0) > 9 ? '9+' : ext.unreadCount}</span>`
-                        : ext.hasUnread
-                          ? `<span class="fc-outlook-unread" title="תגובות חדשות שלא נקראו" style="display:inline-block;width:8px;height:8px;border-radius:9999px;background:#ef4444;margin-inline-end:4px;flex-shrink:0"></span>`
-                          : ''}${taskCode ? `<span class="fc-outlook-code" style="opacity:0.6;font-size:0.85em;margin-inline-end:4px">${esc(taskCode)}</span>` : ''}${esc(title)}</div>
+                      <div class="fc-outlook-title">${taskCode ? `<span class="fc-outlook-code" style="opacity:0.6;font-size:0.85em;margin-inline-end:4px">${esc(taskCode)}</span>` : ''}${esc(title)}</div>
                       ${labels.length > 0 ? `<div class="fc-outlook-labels">${pills}</div>` : ''}
                     </div>
                     <div class="fc-outlook-status" title="${esc(TASK_STATUS_LABELS[status as TaskStatus] || '')}">${statusIcon}</div>

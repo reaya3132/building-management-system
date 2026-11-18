@@ -1,8 +1,8 @@
 /**
- * The app's one background poll: both requests each round, every 30s, only while
- * signed in and the tab is visible, at once on returning to the tab, never two
- * rounds at a time; the task-chat badge keeps its value and source; both
- * sidebars read it without polling themselves.
+ * The app's one background poll: the notifications request each round, every 30s,
+ * only while signed in and the tab is visible, at once on returning to the tab,
+ * never two rounds at a time; the task-chat summary is no longer fetched; both
+ * sidebars read the count without polling themselves.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
@@ -39,8 +39,8 @@ const SUMMARY = '/tasks/unread-summary'
 const NOTIFS = '/notifications/unread-count'
 
 function answer() {
-  api.get.mockImplementation((url: string) => Promise.resolve({
-    data: url === SUMMARY ? { total_unread: 4 } : { count: 2, latest: [] },
+  api.get.mockImplementation(() => Promise.resolve({
+    data: { count: 2, latest: [] },
   }))
 }
 
@@ -57,18 +57,17 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('useBackgroundPolling', () => {
-  it('fetches both at once, then every 30 seconds', async () => {
+  it('fetches the notifications at once, then every 30 seconds', async () => {
     const store = makeStore()
     render(<Provider store={store}><Poller /></Provider>)
     await flush()
-    expect([calls(SUMMARY), calls(NOTIFS)]).toEqual([1, 1])
+    expect([calls(SUMMARY), calls(NOTIFS)]).toEqual([0, 1])   // no task-chat summary
     expect(api.get).toHaveBeenCalledWith(NOTIFS, { params: { scope: 'all', latest: 10 } })
-    expect(store.getState().notifications.taskChatUnread).toBe(4)
     expect(store.getState().notifications.unreadCount).toBe(2)
 
     await act(async () => { vi.advanceTimersByTime(POLL_INTERVAL_MS) })
     await flush()
-    expect([calls(SUMMARY), calls(NOTIFS)]).toEqual([2, 2])
+    expect([calls(SUMMARY), calls(NOTIFS)]).toEqual([0, 2])
   })
 
   it('does not poll while the tab is hidden, and polls at once when it comes back', async () => {
@@ -109,7 +108,7 @@ describe('useBackgroundPolling', () => {
 })
 
 describe('the sidebars', () => {
-  it('show the task-chat badge from the one poll and do not poll themselves', async () => {
+  it('show the notification count from the one poll, no task badge, and do not poll themselves', async () => {
     const { Sidebar, MobileSidebar } = await import('../../components/ui/Sidebar')
     const { ThemeProvider } = await import('../../contexts/ThemeContext')
     const { InventorySettingsProvider } = await import('../../contexts/InventorySettingsContext')
@@ -128,7 +127,8 @@ describe('the sidebars', () => {
       </Provider>,
     )
     await flush()
-    expect(calls(SUMMARY)).toBe(1)                      // once — not once per sidebar
-    expect(screen.getAllByText('4').length).toBeGreaterThanOrEqual(1)
+    expect(calls(NOTIFS)).toBe(1)                       // once — not once per sidebar
+    expect(calls(SUMMARY)).toBe(0)
+    expect(screen.getAllByText('2').length).toBeGreaterThanOrEqual(1)
   })
 })

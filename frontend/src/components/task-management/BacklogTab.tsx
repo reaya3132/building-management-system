@@ -6,7 +6,6 @@ import type { Task, TaskStatus, UserForTask, TaskLabelType } from '../../pages/T
 import TaskDetailModal from './TaskDetailModal'
 import CreateTaskModal from './CreateTaskModal'
 import TaskEditModal from './TaskEditModal'
-import UnreadMessagesDot from './UnreadMessagesDot'
 
 const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   pending: 'מחכה לטיפול',
@@ -43,7 +42,7 @@ export default function BacklogTab({ refreshSignal }: BacklogTabProps) {
   // The task being edited via the shared TaskEditModal (opened from the detail modal).
   const [editingTask, setEditingTask] = useState<Task | null>(null)
 
-  // silent=true refreshes in the background (unread-count poll): no spinner, and
+  // silent=true refreshes in the background: no spinner, and
   // it keeps the current rows on a transient failure instead of clearing them.
   const fetchBacklogTasks = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -86,7 +85,7 @@ export default function BacklogTab({ refreshSignal }: BacklogTabProps) {
     if (refreshSignal !== undefined) fetchBacklogTasks()
   }, [refreshSignal, fetchBacklogTasks])
 
-  // Poll in the background so a new reply's unread badge appears without a manual
+  // Refresh in the background so other users' changes show up without a manual
   // reload; also refresh the moment the tab regains focus.
   useEffect(() => {
     const interval = setInterval(() => {
@@ -115,13 +114,7 @@ export default function BacklogTab({ refreshSignal }: BacklogTabProps) {
     setSelectedTask(null)
   }, [selectedTaskId])
 
-  // Opening a task reads its chat → clear the red unread dot immediately.
   const openTask = (task: Task) => {
-    if (task.has_unread_messages) {
-      setBacklogTasks((prev) =>
-        prev.map((entry) => (entry.id === task.id ? { ...entry, has_unread_messages: false } : entry))
-      )
-    }
     setSelectedTask(task)
     setSelectedTaskId(task.id)
   }
@@ -183,7 +176,6 @@ export default function BacklogTab({ refreshSignal }: BacklogTabProps) {
                   >
                     <div className="flex-1 min-w-0">
                       <span className="inline-flex items-center gap-1.5">
-                        <UnreadMessagesDot show={task.has_unread_messages} count={task.unread_messages_count} />
                         <span className="font-medium text-gray-900 dark:text-white truncate">
                           {task.title}
                         </span>

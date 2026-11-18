@@ -18,7 +18,7 @@ import { configureStore } from '@reduxjs/toolkit'
 
 import authReducer from '../../../store/slices/authSlice'
 import permissionsReducer from '../../../store/slices/permissionsSlice'
-import notificationsReducer, { setTaskChatUnread, setUnreadCount } from '../../../store/slices/notificationsSlice'
+import notificationsReducer, { setUnreadCount } from '../../../store/slices/notificationsSlice'
 import NotificationCenter, { HIGHLIGHT_MS } from '../../../pages/NotificationCenter'
 import type { CenterNotification } from '../useNotificationCenter'
 
@@ -106,13 +106,12 @@ describe('routes', () => {
 // ── sidebar ───────────────────────────────────────────────────────────────────
 
 describe('the sidebar', () => {
-  async function sidebar(unread: number, chat: number) {
+  async function sidebar(unread: number) {
     const { Sidebar, MobileSidebar } = await import('../../ui/Sidebar')
     const { ThemeProvider } = await import('../../../contexts/ThemeContext')
     const { InventorySettingsProvider } = await import('../../../contexts/InventorySettingsContext')
     const store = makeStore()
     store.dispatch(setUnreadCount(unread))
-    store.dispatch(setTaskChatUnread(chat))
     render(
       <Provider store={store}>
         <ThemeProvider><InventorySettingsProvider><MemoryRouter>
@@ -124,7 +123,7 @@ describe('the sidebar', () => {
   }
 
   it('has "מרכז עדכונים" right after "לוח בקרה", in both sidebars', async () => {
-    await sidebar(0, 0)
+    await sidebar(0)
     for (const id of ['desktop', 'mobile']) {
       const links = within(screen.getByTestId(id)).getAllByRole('link').map((a) => a.getAttribute('href'))
       const i = links.indexOf('/dashboard')
@@ -133,23 +132,21 @@ describe('the sidebar', () => {
     }
   })
 
-  it('shows the unread count (999+ above 999), none at zero; the chat badge as before', async () => {
+  it('shows the unread count (999+ above 999), none at zero; no task-management badge', async () => {
     const { navBadge } = await import('../../ui/Sidebar')
-    expect(navBadge('/notifications', 0, 0)).toBeNull()
-    expect(navBadge('/notifications', 0, 12)).toBe('12')
-    expect(navBadge('/notifications', 0, 999)).toBe('999')
-    expect(navBadge('/notifications', 0, 1000)).toBe('999+')
-    expect(navBadge('/task-management', 5, 1000)).toBe('5')
-    expect(navBadge('/task-management', 150, 0)).toBe('99+')
-    expect(navBadge('/task-management', 0, 50)).toBeNull()
-    expect(navBadge('/projects', 5, 5)).toBeNull()
+    expect(navBadge('/notifications', 0)).toBeNull()
+    expect(navBadge('/notifications', 12)).toBe('12')
+    expect(navBadge('/notifications', 999)).toBe('999')
+    expect(navBadge('/notifications', 1000)).toBe('999+')
+    expect(navBadge('/task-management', 50)).toBeNull()
+    expect(navBadge('/projects', 5)).toBeNull()
 
-    await sidebar(1000, 7)
+    await sidebar(1000)
     const desktop = screen.getByTestId('desktop')
     const item = within(desktop).getAllByRole('link').find((a) => a.getAttribute('href') === '/notifications')!
     expect(item).toHaveTextContent('999+')
     const tasks = within(desktop).getAllByRole('link').find((a) => a.getAttribute('href') === '/task-management')
-    if (tasks) expect(tasks).toHaveTextContent('7')
+    if (tasks) expect(tasks.textContent).not.toMatch(/d/)
   })
 })
 

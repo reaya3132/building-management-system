@@ -16,7 +16,6 @@ import {
 } from '../../lib/calendarUtils'
 import { cn } from '../../lib/utils'
 import { formatTaskCode } from '../../lib/taskCode'
-import UnreadMessagesDot from './UnreadMessagesDot'
 
 export type MobileCalendarView = 'day' | 'week' | 'workweek' | 'month'
 
@@ -210,7 +209,6 @@ function AgendaCard({ entry, onClick }: AgendaCardProps) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="font-semibold text-gray-900 dark:text-white truncate">{task.title}</span>
-          <UnreadMessagesDot show={task.has_unread_messages} count={task.unread_messages_count} />
         </div>
         <div className="font-mono text-[11px] text-gray-400 dark:text-gray-500">{formatTaskCode(task.id)}</div>
         <div className="mt-0.5 flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 truncate">
