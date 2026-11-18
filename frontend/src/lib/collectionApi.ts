@@ -279,10 +279,20 @@ export const CollectionAPI = {
     return data
   },
 
-  async addAdjustment(taskId: number, amount: string, note?: string) {
+  /** `note` is required (the server rejects an empty / whitespace-only one). */
+  async addAdjustment(taskId: number, amount: string, note: string) {
     const { data } = await api.post<{ adjustment: CollectionAdjustment; total_amount: string }>(
       `${BASE}/${taskId}/adjustments`,
-      { amount, note: note?.trim() || null }
+      { amount, note: note.trim() }
+    )
+    return data
+  },
+
+  /** `single` only: a positive amount; the server keeps the total ≥ 0. */
+  async updateInitialAmount(taskId: number, initialAmount: string) {
+    const { data } = await api.patch<{ initial_amount: string; total_amount: string }>(
+      `${BASE}/${taskId}/initial-amount`,
+      { initial_amount: initialAmount }
     )
     return data
   },

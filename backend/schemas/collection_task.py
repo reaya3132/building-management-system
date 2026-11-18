@@ -10,13 +10,23 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_serializer, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, field_serializer, model_validator
 
 from backend.models.collection_task import CollectionType
 from backend.schemas.task import TaskAttachmentOut, to_utc_z
 
 # Positive ILS amount, max 9,999,999,999.99, at most two decimal places.
 Money = Annotated[Decimal, Field(gt=0, max_digits=12, decimal_places=2)]
+
+
+def _nonzero(value: Decimal) -> Decimal:
+    if value == 0:
+        raise ValueError("amount must not be zero")
+    return value
+
+
+# Signed, non-zero ILS amount for adjustments: > 0 adds, < 0 reduces.
+SignedMoney = Annotated[Decimal, Field(max_digits=12, decimal_places=2), AfterValidator(_nonzero)]
 
 CollectionTypeLiteral = Literal["single", "ledger"]
 CollectionStatusLiteral = Literal["open", "in_progress", "closed"]
@@ -136,8 +146,16 @@ class StatusIn(BaseModel):
 class AdjustmentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    amount: Money
-    note: str | None = None
+    amount: SignedMoney
+    # Required detail of the addition / reduction; stored and shown in the history.
+    note: Annotated[str, BeforeValidator(_strip), Field(min_length=1)]
+
+
+class InitialAmountUpdate(BaseModel):
+    """New initial amount of a ``single`` task (always positive)."""
+    model_config = ConfigDict(extra="forbid")
+
+    initial_amount: Money
 
 
 # ── Output ───────────────────────────────────────────────────────────────────
@@ -249,6 +267,11 @@ class CollectionUnreadSummary(BaseModel):
 
 class AdjustmentResult(BaseModel):
     adjustment: AdjustmentOut
+    total_amount: Decimal
+
+
+class InitialAmountResult(BaseModel):
+    initial_amount: Decimal
     total_amount: Decimal
 
 

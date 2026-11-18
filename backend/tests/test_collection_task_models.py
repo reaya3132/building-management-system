@@ -118,14 +118,18 @@ class TestCollectionModels:
             billing_month=date(2026, 10, 1), initial_amount=initial_amount,
         ))
 
-    @pytest.mark.parametrize("amount", [Decimal("0"), Decimal("-1.00")])
-    async def test_adjustment_amount_must_be_positive(
-        self, test_db: AsyncSession, admin_user: User, amount
-    ):
+    async def test_adjustment_amount_must_be_nonzero(self, test_db: AsyncSession, admin_user: User):
         task = await _collection_task(test_db, admin_user)
         await _expect_integrity_error(test_db, CollectionAmountAdjustment(
-            task_id=task.id, amount=amount, created_by_user_id=admin_user.id,
+            task_id=task.id, amount=Decimal("0"), created_by_user_id=admin_user.id,
         ))
+
+    async def test_adjustment_reduction_allowed(self, test_db: AsyncSession, admin_user: User):
+        task = await _collection_task(test_db, admin_user)
+        test_db.add(CollectionAmountAdjustment(
+            task_id=task.id, amount=Decimal("-1.00"), created_by_user_id=admin_user.id,
+        ))
+        await test_db.flush()
 
     @pytest.mark.parametrize("amount", [Decimal("0"), Decimal("-1.00")])
     async def test_ledger_item_amount_must_be_positive(

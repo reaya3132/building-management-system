@@ -7,7 +7,9 @@ written together or not at all. Changes to amounts or ledger items first take a
 row lock on the task's details row, serializing concurrent financial writes.
 
 Rules (see the module spec):
-- ``single``: immutable initial amount + positive, append-only adjustments.
+- ``single``: positive, editable initial amount + append-only adjustments
+  (additions > 0, reductions < 0). The total (initial + adjustments) may be 0
+  but never negative; both changes check it under the same details-row lock.
 - ``ledger``: subject/amount items, edited in place or archived — never deleted.
 - Closed tasks lock amounts and items; archived tasks accept only unarchive.
 
@@ -40,6 +42,7 @@ from backend.repositories.collection_task_repository import CollectionTaskReposi
 from backend.repositories.notification_repository import NotificationRepository
 from backend.schemas.collection_task import (
     AdjustmentCreate,
+    InitialAmountUpdate,
     CollectionTaskCreate,
     CollectionTaskUpdate,
     LedgerItemCreate,
@@ -334,9 +337,18 @@ class CollectionTaskService:
 
     # ── amounts ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _ensure_total_not_negative(total: Decimal) -> None:
+        if total < 0:
+            raise collection_error(422, "total_negative", "The total amount cannot be negative",
+                                   total_amount=_money(total))
+
     async def add_adjustment(self, task_id: int, data: AdjustmentCreate) -> CollectionAmountAdjustment:
         task = await self.load_for_edit(task_id)
         await self._locked_details_for_money(task, CollectionType.SINGLE)
+        if data.amount < 0:
+            # Under the details-row lock: concurrent amount changes are serialized.
+            self._ensure_total_not_negative(await self.repo.total_for(task.id) + data.amount)
         adjustment = CollectionAmountAdjustment(
             task_id=task.id, amount=data.amount, note=data.note, created_by_user_id=self.user.id,
         )
@@ -347,6 +359,21 @@ class CollectionTaskService:
         })
         await self.db.refresh(adjustment, ["created_by_user"])
         return adjustment
+
+    async def update_initial_amount(self, task_id: int, data: InitialAmountUpdate) -> None:
+        task = await self.load_for_edit(task_id)
+        details = await self._locked_details_for_money(task, CollectionType.SINGLE)
+        old = details.initial_amount
+        if old == data.initial_amount:
+            return
+        adjustments_sum = await self.repo.total_for(task.id) - old
+        self._ensure_total_not_negative(data.initial_amount + adjustments_sum)
+        details.initial_amount = data.initial_amount
+        await self.db.flush()
+        await self._log(task.id, CollectionEvent.INITIAL_AMOUNT_CHANGED, {
+            "before": {"initial_amount": _money(old)},
+            "after": {"initial_amount": _money(data.initial_amount)},
+        })
 
     async def add_ledger_item(self, task_id: int, data: LedgerItemCreate) -> CollectionLedgerItem:
         task = await self.load_for_edit(task_id)

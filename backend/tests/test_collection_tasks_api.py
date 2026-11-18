@@ -5,6 +5,7 @@ minted directly to keep the suite fast.
 """
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 
 import pytest
@@ -96,6 +97,16 @@ async def _create(client: AsyncClient, user: User, body: dict) -> dict:
     response = await client.post(f"{API}/", headers=_auth(user), json=body)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+async def _audit_details(db: AsyncSession, task_id: int, action: str) -> list[dict]:
+    """The parsed ``details`` of each history entry with this action, in order."""
+    rows = await db.execute(
+        select(AuditLog.details)
+        .where(AuditLog.entity == "collection_task", AuditLog.entity_id == str(task_id), AuditLog.action == action)
+        .order_by(AuditLog.id)
+    )
+    return [json.loads(d) if isinstance(d, str) else d for d in rows.scalars()]
 
 
 def _code(response) -> str | None:
@@ -260,7 +271,7 @@ class TestAccess:
             ("get", f"{API}/{tid}/ledger-items", {}),
             ("patch", f"{API}/{tid}", {"json": {"title": "x"}}),
             ("post", f"{API}/{tid}/status", {"json": {"status": "closed"}}),
-            ("post", f"{API}/{tid}/adjustments", {"json": {"amount": "1"}}),
+            ("post", f"{API}/{tid}/adjustments", {"json": {"amount": "1", "note": "פירוט"}}),
             ("post", f"{API}/{tid}/archive", {}),
             ("get", f"/api/v1/tasks/{tid}/messages", {}),
             ("post", f"/api/v1/tasks/{tid}/messages", {"data": {"message": "hi"}}),
@@ -354,24 +365,123 @@ class TestAmounts:
     async def test_single_adjustments_append_only(self, test_client, test_db, admin_user, project):
         task = await _create(test_client, admin_user, _single(project.id, [admin_user.id]))
         url = f"{API}/{task['id']}/adjustments"
-        first = await test_client.post(url, headers=_auth(admin_user), json={"amount": "0.10"})
+        first = await test_client.post(url, headers=_auth(admin_user), json={"amount": "0.10", "note": "פירוט"})
         second = await test_client.post(url, headers=_auth(admin_user), json={"amount": "0.20", "note": "fee"})
         assert first.status_code == second.status_code == 201
         assert second.json()["total_amount"] == "1000.30"
         assert second.json()["adjustment"]["created_by"]["id"] == admin_user.id
 
-        for bad in ("0", "-1", "1.001"):
-            assert (await test_client.post(url, headers=_auth(admin_user), json={"amount": bad})).status_code == 422
+        for bad in ("0", "-0.00", "1.001", "-1.001"):
+            assert (await test_client.post(url, headers=_auth(admin_user), json={"amount": bad, "note": "פירוט"})).status_code == 422
 
         detail = (await test_client.get(f"{API}/{task['id']}", headers=_auth(admin_user))).json()
         assert detail["initial_amount"] == "1000.00" and detail["total_amount"] == "1000.30"
         assert [a["amount"] for a in detail["adjustments"]] == ["0.10", "0.20"]
         assert (await _audit_actions(test_db, task["id"]))[-2:] == ["adjustment_added", "adjustment_added"]
 
+    async def test_single_reductions_keep_total_not_negative(self, test_client, test_db, admin_user, project):
+        task = await _create(test_client, admin_user, _single(project.id, [admin_user.id]))
+        url = f"{API}/{task['id']}/adjustments"
+        reduced = await test_client.post(url, headers=_auth(admin_user), json={"amount": "-400.00", "note": "הנחה"})
+        assert reduced.status_code == 201 and reduced.json()["total_amount"] == "600.00"
+        assert reduced.json()["adjustment"]["amount"] == "-400.00"
+
+        too_much = await test_client.post(url, headers=_auth(admin_user), json={"amount": "-600.01", "note": "פירוט"})
+        assert too_much.status_code == 422 and _code(too_much) == "total_negative"
+
+        to_zero = await test_client.post(url, headers=_auth(admin_user), json={"amount": "-600.00", "note": "פירוט"})
+        assert to_zero.status_code == 201 and to_zero.json()["total_amount"] == "0.00"
+        # At total 0: any further reduction is rejected, an addition is accepted.
+        below_zero = await test_client.post(url, headers=_auth(admin_user), json={"amount": "-0.01", "note": "פירוט"})
+        assert below_zero.status_code == 422 and _code(below_zero) == "total_negative"
+        added = await test_client.post(url, headers=_auth(admin_user), json={"amount": "25.00", "note": "פירוט"})
+        assert added.status_code == 201 and added.json()["total_amount"] == "25.00"
+
+        detail = (await test_client.get(f"{API}/{task['id']}", headers=_auth(admin_user))).json()
+        assert [a["amount"] for a in detail["adjustments"]] == ["-400.00", "-600.00", "25.00"]
+        logged = await _audit_details(test_db, task["id"], "adjustment_added")
+        assert [d["after"] for d in logged] == [
+            {"amount": "-400.00", "note": "הנחה"}, {"amount": "-600.00", "note": "פירוט"}, {"amount": "25.00", "note": "פירוט"},
+        ]
+
+    async def test_adjustment_note_is_required(self, test_client, test_db, admin_user, project):
+        task = await _create(test_client, admin_user, _single(project.id, [admin_user.id]))
+        url = f"{API}/{task['id']}/adjustments"
+        for amount in ("50.00", "-50.00"):
+            for body in ({"amount": amount}, {"amount": amount, "note": None},
+                         {"amount": amount, "note": ""}, {"amount": amount, "note": "   \t\n "}):
+                rejected = await test_client.post(url, headers=_auth(admin_user), json=body)
+                assert rejected.status_code == 422, body
+        assert (await _audit_actions(test_db, task["id"])) == ["created"]
+
+        added = await test_client.post(url, headers=_auth(admin_user), json={"amount": "50.00", "note": "  קנס איחור  "})
+        reduced = await test_client.post(url, headers=_auth(admin_user), json={"amount": "-20.00", "note": " הנחה "})
+        assert added.status_code == reduced.status_code == 201
+        assert added.json()["adjustment"]["note"] == "קנס איחור"  # stored trimmed
+        detail = (await test_client.get(f"{API}/{task['id']}", headers=_auth(admin_user))).json()
+        assert [(a["amount"], a["note"]) for a in detail["adjustments"]] == [("50.00", "קנס איחור"), ("-20.00", "הנחה")]
+        logged = await _audit_details(test_db, task["id"], "adjustment_added")
+        assert [d["after"] for d in logged] == [
+            {"amount": "50.00", "note": "קנס איחור"}, {"amount": "-20.00", "note": "הנחה"},
+        ]
+        history = (await test_client.get(f"{API}/{task['id']}/history", headers=_auth(admin_user))).json()["items"]
+        notes = {e["details"]["after"]["note"] for e in history if e["action"] == "adjustment_added"}
+        assert notes == {"קנס איחור", "הנחה"}
+
+    async def test_single_initial_amount_editable(self, test_client, test_db, admin_user, project):
+        task = await _create(test_client, admin_user, _single(project.id, [admin_user.id]))
+        base = f"{API}/{task['id']}"
+        await test_client.post(f"{base}/adjustments", headers=_auth(admin_user), json={"amount": "-300.00", "note": "פירוט"})
+
+        changed = await test_client.patch(f"{base}/initial-amount", headers=_auth(admin_user),
+                                          json={"initial_amount": "500.00"})
+        assert changed.status_code == 200
+        assert changed.json() == {"initial_amount": "500.00", "total_amount": "200.00"}
+
+        # Down to exactly the reductions (total 0) is allowed; below that is not.
+        assert (await test_client.patch(f"{base}/initial-amount", headers=_auth(admin_user),
+                                        json={"initial_amount": "300.00"})).json()["total_amount"] == "0.00"
+        below = await test_client.patch(f"{base}/initial-amount", headers=_auth(admin_user),
+                                        json={"initial_amount": "299.99"})
+        assert below.status_code == 422 and _code(below) == "total_negative"
+
+        for bad in ("0", "-5", "1.001", None):
+            assert (await test_client.patch(f"{base}/initial-amount", headers=_auth(admin_user),
+                                            json={"initial_amount": bad})).status_code == 422
+
+        # Same value again is a no-op (no extra history entry).
+        await test_client.patch(f"{base}/initial-amount", headers=_auth(admin_user), json={"initial_amount": "300.00"})
+        actions = await _audit_actions(test_db, task["id"])
+        assert actions[-2:] == ["initial_amount_changed", "initial_amount_changed"]
+        logged = await _audit_details(test_db, task["id"], "initial_amount_changed")
+        assert logged == [
+            {"before": {"initial_amount": "1000.00"}, "after": {"initial_amount": "500.00"}},
+            {"before": {"initial_amount": "500.00"}, "after": {"initial_amount": "300.00"}},
+        ]
+
+    async def test_initial_amount_rules(self, test_client, admin_user, member_user, project):
+        single = await _create(test_client, admin_user, _single(project.id, [admin_user.id]))
+        ledger = await _create(test_client, admin_user, _ledger(project.id, [admin_user.id]))
+        body = {"initial_amount": "10.00"}
+
+        wrong = await test_client.patch(f"{API}/{ledger['id']}/initial-amount", headers=_auth(admin_user), json=body)
+        assert wrong.status_code == 409 and _code(wrong) == "wrong_collection_type"
+        not_assignee = await test_client.patch(f"{API}/{single['id']}/initial-amount",
+                                               headers=_auth(member_user), json=body)
+        assert not_assignee.status_code == 403
+
+        url = f"{API}/{single['id']}"
+        await test_client.post(f"{url}/status", headers=_auth(admin_user), json={"status": "closed"})
+        closed = await test_client.patch(f"{url}/initial-amount", headers=_auth(admin_user), json=body)
+        assert closed.status_code == 409 and _code(closed) == "task_closed"
+        await test_client.post(f"{url}/archive", headers=_auth(admin_user))
+        archived = await test_client.patch(f"{url}/initial-amount", headers=_auth(admin_user), json=body)
+        assert archived.status_code == 409 and _code(archived) == "task_archived"
+
     async def test_wrong_type_actions_rejected(self, test_client, admin_user, project):
         single = await _create(test_client, admin_user, _single(project.id, [admin_user.id]))
         ledger = await _create(test_client, admin_user, _ledger(project.id, [admin_user.id]))
-        r1 = await test_client.post(f"{API}/{ledger['id']}/adjustments", headers=_auth(admin_user), json={"amount": "5"})
+        r1 = await test_client.post(f"{API}/{ledger['id']}/adjustments", headers=_auth(admin_user), json={"amount": "5", "note": "פירוט"})
         r2 = await test_client.post(f"{API}/{single['id']}/ledger-items", headers=_auth(admin_user),
                                     json={"subject": "x", "amount": "5"})
         assert r1.status_code == r2.status_code == 409
@@ -398,6 +508,21 @@ class TestAmounts:
         assert len(active) == 2 and len(everything) == 3
         actions = await _audit_actions(test_db, task["id"])
         assert actions[-3:] == ["ledger_item_added", "ledger_item_updated", "ledger_item_archived"]
+
+    async def test_ledger_items_still_reject_non_positive_amounts(self, test_client, admin_user, project):
+        task = await _create(test_client, admin_user, _ledger(project.id, [admin_user.id]))
+        items_url = f"{API}/{task['id']}/ledger-items"
+        item_id = (await test_client.get(items_url, headers=_auth(admin_user))).json()[0]["id"]
+        for bad in ("-5", "-0.01", "0"):
+            created = await test_client.post(items_url, headers=_auth(admin_user), json={"subject": "x", "amount": bad})
+            assert created.status_code == 422
+            edited = await test_client.patch(f"{items_url}/{item_id}", headers=_auth(admin_user), json={"amount": bad})
+            assert edited.status_code == 422
+        bad_create = await test_client.post(f"{API}/", headers=_auth(admin_user), json=_ledger(
+            project.id, [admin_user.id], items=[{"subject": "x", "amount": "-5"}]))
+        assert bad_create.status_code == 422
+        detail = (await test_client.get(f"{API}/{task['id']}", headers=_auth(admin_user))).json()
+        assert detail["total_amount"] == "330.50"
 
     async def test_equal_amount_is_not_a_change_but_one_agora_is(self, test_client, test_db, admin_user, project):
         task = await _create(test_client, admin_user, _ledger(project.id, [admin_user.id], items=[]))
@@ -428,12 +553,12 @@ class TestStatusAndArchive:
         closed = await test_client.post(f"{url}/status", headers=_auth(admin_user), json={"status": "closed"})
         assert closed.json()["status"] == "closed" and closed.json()["completed_at"] is not None
 
-        locked = await test_client.post(f"{url}/adjustments", headers=_auth(admin_user), json={"amount": "5"})
+        locked = await test_client.post(f"{url}/adjustments", headers=_auth(admin_user), json={"amount": "5", "note": "פירוט"})
         assert locked.status_code == 409 and _code(locked) == "task_closed"
 
         reopened = await test_client.post(f"{url}/status", headers=_auth(admin_user), json={"status": "open"})
         assert reopened.json()["status"] == "open" and reopened.json()["completed_at"] is None
-        assert (await test_client.post(f"{url}/adjustments", headers=_auth(admin_user), json={"amount": "5"})).status_code == 201
+        assert (await test_client.post(f"{url}/adjustments", headers=_auth(admin_user), json={"amount": "5", "note": "פירוט"})).status_code == 201
         # Same status again is a no-op (no extra history entry).
         await test_client.post(f"{url}/status", headers=_auth(admin_user), json={"status": "open"})
         assert await _audit_actions(test_db, task["id"]) == ["created", "status_changed", "reopened", "adjustment_added"]

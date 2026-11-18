@@ -105,7 +105,9 @@ class CollectionTaskRepository:
         takes this lock first, serializing concurrent financial writes per task."""
         q = select(CollectionTaskDetails).where(CollectionTaskDetails.task_id == task_id)
         if for_update:
-            q = q.with_for_update()
+            # populate_existing: refresh an already-loaded instance from the locked
+            # row, so checks never use values read before the lock was taken.
+            q = q.with_for_update().execution_options(populate_existing=True)
         return (await self.db.execute(q)).scalar_one_or_none()
 
     async def get_project_brief(self, project_id: int) -> tuple[Project, str | None] | None:
