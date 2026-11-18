@@ -167,23 +167,13 @@ function filterNavigationItems(
   })
 }
 
-/**
- * Total unread task-chat messages for the current user — the red badge on the
- * "ניהול משימות" nav item. Kept fresh by the app's one background poll
- * (useBackgroundPolling: ~30s and on tab focus); both sidebars read it here.
- */
-function useTaskUnreadTotal(): number {
-  return useSelector((state: RootState) => state.notifications.taskChatUnread)
-}
-
 /** Unread notifications of every module (the server counts up to 1000). */
 function useNotificationUnread(): number {
   return useSelector((state: RootState) => state.notifications.unreadCount)
 }
 
-/** The nav badge text: task chat (99+, as before) or notifications (999+). */
-export function navBadge(href: string, taskUnread: number, notificationUnread: number): string | null {
-  if (href === '/task-management' && taskUnread > 0) return taskUnread > 99 ? '99+' : String(taskUnread)
+/** The nav badge text: only the notification center has one (999+). */
+export function navBadge(href: string, notificationUnread: number): string | null {
   if (href === '/notifications' && notificationUnread > 0) {
     return notificationUnread > 999 ? '999+' : String(notificationUnread)
   }
@@ -194,7 +184,6 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
   const location = useLocation()
   const { theme, toggleTheme } = useTheme()
   const me = useSelector((state: RootState) => state.auth.me)
-  const taskUnread = useTaskUnreadTotal()
   const notificationUnread = useNotificationUnread()
   const permissions = useSelector((state: RootState) => state.permissions.permissions)
   const { open: openInventorySettings } = useInventorySettings()
@@ -293,9 +282,9 @@ export function Sidebar({ isCollapsed, onToggle }: SidebarProps) {
                     "w-5 h-5",
                     isActive ? "text-blue-600 dark:text-blue-400" : "text-gray-500 dark:text-gray-400"
                   )} />
-                  {navBadge(item.href, taskUnread, notificationUnread) && (
+                  {navBadge(item.href, notificationUnread) && (
                     <span className="absolute -top-1 -left-1 min-w-[1.25rem] h-5 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-medium">
-                      {navBadge(item.href, taskUnread, notificationUnread)}
+                      {navBadge(item.href, notificationUnread)}
                     </span>
                   )}
                 </span>
@@ -395,7 +384,6 @@ export function MobileSidebar({ isOpen, onClose }: MobileSidebarProps) {
   const location = useLocation()
   const { theme, toggleTheme } = useTheme()
   const me = useSelector((state: RootState) => state.auth.me)
-  const taskUnread = useTaskUnreadTotal()
   const notificationUnread = useNotificationUnread()
   const permissions = useSelector((state: RootState) => state.permissions.permissions)
   const { open: openInventorySettings } = useInventorySettings()
@@ -472,9 +460,9 @@ export function MobileSidebar({ isOpen, onClose }: MobileSidebarProps) {
                           "w-5 h-5",
                           isActive ? "text-blue-600 dark:text-blue-400" : "text-gray-500 dark:text-gray-400"
                         )} />
-                        {navBadge(item.href, taskUnread, notificationUnread) && (
+                        {navBadge(item.href, notificationUnread) && (
                           <span className="absolute -top-1 -left-1 min-w-[1.25rem] h-5 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-medium">
-                            {navBadge(item.href, taskUnread, notificationUnread)}
+                            {navBadge(item.href, notificationUnread)}
                           </span>
                         )}
                       </span>
