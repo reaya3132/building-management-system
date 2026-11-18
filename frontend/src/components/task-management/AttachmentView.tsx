@@ -32,23 +32,31 @@ export default function AttachmentView({ fileName, fileUrl, className }: Attachm
   const kind = attachmentKindOf(fileName)
   const href = fileUrl ?? '#'
   const [isViewerOpen, setIsViewerOpen] = useState(false)
+  // The URL the open document was opened with. The fileUrl prop may change while
+  // it is open (a refresh renews a signed URL); the document shown keeps this one,
+  // so it is never reloaded (page, zoom and scroll stay). The links (new window /
+  // download) and the next opening use the current fileUrl.
+  const [openedUrl, setOpenedUrl] = useState<string | null>(null)
 
   // Attachments live inside clickable rows (chat bubbles, task cards), so the
   // click must not bubble up and trigger the surrounding element as well.
   const openViewer = (event: React.MouseEvent) => {
     event.preventDefault()
     event.stopPropagation()
+    setOpenedUrl(fileUrl)
     setIsViewerOpen(true)
   }
   const closeViewer = () => setIsViewerOpen(false)
+  const shownUrl = openedUrl ?? fileUrl
 
   const viewerPortal = fileUrl
     ? createPortal(
         <AnimatePresence>
-          {isViewerOpen && (
+          {isViewerOpen && shownUrl && (
             <DocumentViewerModal
               isOpen={isViewerOpen}
-              document={{ file_path: fileUrl, description: fileName }}
+              document={{ file_path: shownUrl, description: fileName }}
+              linkUrl={fileUrl}
               onClose={closeViewer}
             />
           )}

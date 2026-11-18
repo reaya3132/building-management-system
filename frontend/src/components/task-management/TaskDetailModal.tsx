@@ -31,6 +31,7 @@ import { EVENT_TYPE_LABELS, isAllDayTask, describeRecurrence } from '../../lib/t
 import { PermissionGuard } from '../ui/PermissionGuard'
 import TaskChecklist from './TaskChecklist'
 import AttachmentView from './AttachmentView'
+import { keepFileUrls } from '../../lib/stableFileUrls'
 import RecordButton from './RecordButton'
 
 const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
@@ -166,7 +167,9 @@ export function TaskDetailPanel({
         params: { _t: Date.now() },
         headers: { 'Cache-Control': 'no-cache' },
       })
-      setTaskMessages(data)
+      // A file already shown keeps its (still valid) signed URL, so an open
+      // document is not reloaded by every refresh; new files take the new URL.
+      setTaskMessages((prev) => keepFileUrls(prev, data))
     } catch {
       if (!silent) setTaskMessages([])
     } finally {
