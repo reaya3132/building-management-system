@@ -1,19 +1,15 @@
 import { useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import type { AppDispatch, RootState } from '../store'
-import api from '../lib/api'
-import { pollNotifications, resetNotifications, setTaskChatUnread } from '../store/slices/notificationsSlice'
+import { pollNotifications, resetNotifications } from '../store/slices/notificationsSlice'
 
 export const POLL_INTERVAL_MS = 30_000
 
 /**
- * The app's one background poll (formerly the sidebar's task-chat badge poll):
- * every 30s while signed in and the tab is visible, and at once when the tab
- * becomes visible again. Each round fetches, side by side,
- *   - the unread task-chat total (/tasks/unread-summary) — the "ניהול משימות" badge,
- *     unchanged;
- *   - the notifications' unread count and newest unread items
- *     (/notifications/unread-count?scope=all&latest=10) — the counter and the toasts.
+ * The app's one background poll: every 30s while signed in and the tab is
+ * visible, and at once when the tab becomes visible again. Each round fetches the
+ * notifications' unread count and newest unread items
+ * (/notifications/unread-count?scope=all&latest=10) — the counter and the toasts.
  * A round never starts while the previous one is still out. Mount it once (App).
  */
 export function useBackgroundPolling(): void {
@@ -30,22 +26,13 @@ export function useBackgroundPolling(): void {
     // user's baseline (an aborted thunk is rejected and changes nothing).
     let pending: { abort: () => void } | null = null
 
-    const loadTaskChat = async () => {
-      try {
-        const { data } = await api.get<{ total_unread: number }>('/tasks/unread-summary')
-        if (active) dispatch(setTaskChatUnread(data.total_unread ?? 0))
-      } catch {
-        /* ignore transient failures */
-      }
-    }
-
     const round = async () => {
       if (!active || inFlight || document.hidden) return
       inFlight = true
       const poll = dispatch(pollNotifications())
       pending = poll
       try {
-        await Promise.all([loadTaskChat(), poll])
+        await poll
       } finally {
         pending = null
         inFlight = false

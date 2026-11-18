@@ -3,14 +3,13 @@ import { useSelector } from 'react-redux'
 import type { RootState } from '../../store'
 import api from '../../lib/api'
 import { avatarUrl } from '../../lib/api'
-import { RefreshCw, User, Plus, Search, MessageCircle } from 'lucide-react'
+import { RefreshCw, User, Plus, Search } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { formatTaskCode } from '../../lib/taskCode'
 import type { Task, TaskStatus, UserForTask, TaskLabelType } from '../../pages/TaskCalendar'
 import TaskDetailModal from './TaskDetailModal'
 import CreateEventModal from './CreateEventModal'
 import TaskEditModal from './TaskEditModal'
-import UnreadMessagesDot from './UnreadMessagesDot'
 
 const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   pending: 'מחכה לטיפול',
@@ -50,9 +49,6 @@ export default function TaskList() {
   const [filterUserId, setFilterUserId] = useState<number | null>(null)
   const [statusFilter, setStatusFilter] = useState<TaskStatus | ''>('')
   const [searchQuery, setSearchQuery] = useState<string>('')
-  // When on, show only tasks that have an unread chat message, so the user does
-  // not have to scroll the list hunting for the red dots.
-  const [unreadOnly, setUnreadOnly] = useState(false)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   // The task being edited via the shared TaskEditModal (opened from the detail modal).
@@ -62,7 +58,7 @@ export default function TaskList() {
   const [showCreateModal, setShowCreateModal] = useState(false)
 
   // silent=true refreshes in the background (no spinner, keeps current rows on
-  // error) so polling can surface new unread-reply dots without flicker.
+  // error) so the periodic refresh does not flicker.
   const fetchTasks = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
     try {
@@ -99,7 +95,7 @@ export default function TaskList() {
     fetchTasks()
   }, [fetchTasks])
 
-  // Poll in the background so a new reply's unread dot appears without a manual
+  // Refresh in the background so other users' changes show up without a manual
   // reload; also refresh the moment the tab regains focus.
   useEffect(() => {
     const interval = setInterval(() => {
@@ -133,22 +129,14 @@ export default function TaskList() {
     )
   }
 
-  const unreadTaskCount = tasks.filter((t) => t.has_unread_messages).length
-
   const filteredTasks = tasks.filter((t) => {
     const status = (t.status || 'pending') as TaskStatus
     if (statusFilter && status !== statusFilter) return false
-    if (unreadOnly && !t.has_unread_messages) return false
     if (!matchesSearch(t)) return false
     return true
   })
 
-  // Opening a task reads its chat → clear the red unread dot immediately (the
-  // server also marks it read via GET /tasks/{id}).
   const openTask = (task: Task) => {
-    if (task.has_unread_messages) {
-      setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, has_unread_messages: false } : t)))
-    }
     setSelectedTask(task)
     setSelectedTaskId(task.id)
   }
@@ -215,33 +203,6 @@ export default function TaskList() {
           </select>
         </div>
 
-        {/* Unread-messages filter toggle */}
-        <button
-          type="button"
-          onClick={() => setUnreadOnly((v) => !v)}
-          aria-pressed={unreadOnly}
-          title="הצג רק משימות עם הודעה שלא נקראה"
-          className={cn(
-            'inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors',
-            unreadOnly
-              ? 'bg-red-600 border-red-600 text-white shadow-md'
-              : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
-          )}
-        >
-          <MessageCircle className="w-4 h-4" />
-          הודעות שלא נקראו
-          {unreadTaskCount > 0 && (
-            <span
-              className={cn(
-                'inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-xs font-bold',
-                unreadOnly ? 'bg-white/25 text-white' : 'bg-red-600 text-white'
-              )}
-            >
-              {unreadTaskCount}
-            </span>
-          )}
-        </button>
-
         {/* Add Task button */}
         <button
           type="button"
@@ -305,7 +266,6 @@ export default function TaskList() {
                       </td>
                       <td className="py-3 px-4">
                         <span className="inline-flex items-center gap-1.5">
-                          <UnreadMessagesDot show={task.has_unread_messages} count={task.unread_messages_count} />
                           <span className="font-medium text-gray-900 dark:text-white">
                             {task.title}
                           </span>

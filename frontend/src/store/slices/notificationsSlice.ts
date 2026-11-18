@@ -27,8 +27,6 @@ const SHOWN_KEYS_LIMIT = 500
 interface NotificationsState {
   /** Unread notifications of every module (capped by the server at 1000). */
   unreadCount: number
-  /** Unread task-chat messages (/tasks/unread-summary) — the existing nav badge. */
-  taskChatUnread: number
   /** False until the first poll: what is unread then is the baseline, never toasted. */
   baselineReady: boolean
   /** `id:created_at` of everything already seen. A merged chat notification gets a
@@ -46,7 +44,6 @@ interface NotificationsState {
 
 const initialState: NotificationsState = {
   unreadCount: 0,
-  taskChatUnread: 0,
   baselineReady: false,
   shownKeys: [],
   windowFull: false,
@@ -97,9 +94,6 @@ const notificationsSlice = createSlice({
     adjustUnread(state, action: PayloadAction<number>) {
       state.unreadCount = Math.max(0, state.unreadCount + action.payload)
     },
-    setTaskChatUnread(state, action: PayloadAction<number>) {
-      state.taskChatUnread = action.payload
-    },
     /** The toast on screen is done (timed out, closed or clicked). */
     toastDone(state) {
       state.toastQueue.shift()
@@ -147,5 +141,5 @@ const notificationsSlice = createSlice({
   },
 })
 
-export const { setUnreadCount, adjustUnread, setTaskChatUnread, toastDone, resetNotifications } = notificationsSlice.actions
+export const { setUnreadCount, adjustUnread, toastDone, resetNotifications } = notificationsSlice.actions
 export default notificationsSlice.reducer
