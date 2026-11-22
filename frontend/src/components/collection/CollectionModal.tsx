@@ -12,6 +12,8 @@ interface CollectionModalProps {
   /** Sticky footer (usually cancel + submit). */
   footer?: React.ReactNode
   maxWidth?: string
+  /** When false, clicking outside the dialog does not close it. Defaults to true. */
+  closeOnBackdropClick?: boolean
 }
 
 /**
@@ -28,9 +30,10 @@ export default function CollectionModal({
   children,
   footer,
   maxWidth = 'max-w-lg',
+  closeOnBackdropClick = true,
 }: CollectionModalProps) {
   return (
-    <ModalOverlay isOpen={isOpen} onClose={onClose} maxWidth={maxWidth}>
+    <ModalOverlay isOpen={isOpen} onClose={onClose} maxWidth={maxWidth} closeOnBackdropClick={closeOnBackdropClick}>
       <div dir="rtl" className="flex flex-col max-h-[90vh]">
         <div className="flex items-start gap-3 px-4 sm:px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-700">
           <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 bg-gradient-to-br from-emerald-500 to-teal-500 text-white shadow-md shadow-emerald-500/20">
