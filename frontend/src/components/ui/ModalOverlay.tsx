@@ -11,6 +11,8 @@ interface ModalOverlayProps {
   borderColor?: string
   /** Z-index class */
   zIndex?: string
+  /** When false, clicking the backdrop does not close the modal. Defaults to true. */
+  closeOnBackdropClick?: boolean
 }
 
 /**
@@ -24,6 +26,7 @@ const ModalOverlay: React.FC<ModalOverlayProps> = ({
   maxWidth = 'max-w-md',
   borderColor = 'border-gray-200 dark:border-gray-700',
   zIndex = 'z-[70]',
+  closeOnBackdropClick = true,
 }) => {
   return (
     <AnimatePresence>
@@ -34,7 +37,7 @@ const ModalOverlay: React.FC<ModalOverlayProps> = ({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           className={`fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center ${zIndex} p-4`}
-          onClick={onClose}
+          onClick={closeOnBackdropClick ? onClose : undefined}
         >
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 20 }}

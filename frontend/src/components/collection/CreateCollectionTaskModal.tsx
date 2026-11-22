@@ -134,6 +134,8 @@ export default function CreateCollectionTaskModal({ isOpen, onClose, defaultMont
       title="משימת גבייה חדשה"
       subtitle="סכום יחיד או פירוט פריטים לחודש חיוב אחד"
       maxWidth="max-w-2xl"
+      // Closing discards the new task's form, so only explicit actions close it.
+      closeOnBackdropClick={false}
       footer={
         <>
           <PrimaryButton onClick={submit} disabled={saving}>{saving ? 'שומר...' : 'יצירה'}</PrimaryButton>
