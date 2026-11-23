@@ -248,7 +248,11 @@ export default function BacklogTab({ refreshSignal }: BacklogTabProps) {
         onClose={() => setEditingTask(null)}
         users={users}
         taskLabels={taskLabels}
-        onSaved={() => { void fetchBacklogTasks() }}
+        onSaved={(updated) => {
+          void fetchBacklogTasks()
+          // Keep an open detail view in sync (e.g. a changed assignee set).
+          if (updated && selectedTask?.id === updated.id) setSelectedTask(updated)
+        }}
         onLabelsChanged={fetchLabels}
       />
 

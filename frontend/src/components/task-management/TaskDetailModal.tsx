@@ -153,6 +153,13 @@ export function TaskDetailPanel({
     fetchTask(taskId)
   }, [taskId, initialTask?.id, fetchTask])
 
+  // The parent may hand over a newer copy of the SAME task (e.g. after an edit
+  // while this view stays open) — show it, so assignees etc. never go stale.
+  useEffect(() => {
+    if (initialTask && initialTask.id === taskId) setTask(initialTask)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTask])
+
   // Single source of truth for loading the chat. Reused by the open-task effect
   // and after any delete so this UI never diverges from the server.
   // `silent` skips the loading spinner (used by the background poll) so the list
@@ -492,6 +499,11 @@ export function TaskDetailPanel({
                   </span>
                 )}
                 <span className="font-medium">{assignee.full_name}</span>
+                {(effectiveTask.assignees?.length ?? 0) > 1 && assignee.user_id === effectiveTask.assigned_to_user_id && (
+                  <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                    ראשי
+                  </span>
+                )}
               </span>
             ))}
           </div>
@@ -579,7 +591,7 @@ export function TaskDetailPanel({
           {/* רשימת משימות */}
           <TaskChecklist
             taskId={effectiveTask.id}
-            canEdit={isAdmin || me?.id === effectiveTask.assigned_to_user_id}
+            canEdit={canEditTask(effectiveTask, me)}
             participants={(effectiveTask.participants || []).map((p) => ({
               id: p.user_id,
               name: p.full_name,

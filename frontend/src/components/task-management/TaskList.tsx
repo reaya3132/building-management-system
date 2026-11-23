@@ -368,7 +368,11 @@ export default function TaskList() {
         onClose={() => setEditingTask(null)}
         users={users}
         taskLabels={taskLabels}
-        onSaved={() => { void fetchTasks(true) }}
+        onSaved={(updated) => {
+          void fetchTasks(true)
+          // Keep an open detail view in sync (e.g. a changed assignee set).
+          if (updated && selectedTask?.id === updated.id) setSelectedTask(updated)
+        }}
         onLabelsChanged={fetchLabels}
       />
 

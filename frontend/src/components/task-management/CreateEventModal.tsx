@@ -5,9 +5,10 @@ import api from '../../lib/api'
 import Modal from '../Modal'
 import { Tag, Paperclip, X, Zap } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import type { Task, TaskStatus, TaskLabelType, RecurrenceRule } from '../../pages/TaskCalendar'
+import type { Task, TaskStatus, TaskLabelType, RecurrenceRule, UserForTask } from '../../pages/TaskCalendar'
 import { useDeleteTaskLabel } from './useDeleteTaskLabel'
 import RecordButton from './RecordButton'
+import AssigneePicker from './AssigneePicker'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,7 +51,8 @@ interface CreateForm {
   end_time: string
   description: string
   status: TaskStatus
-  assigned_to_user_id: string
+  /** Ordered assignee ids — the FIRST is the primary assignee. */
+  assigned_to_user_ids: number[]
   label_ids: number[]
   participant_ids: number[]
   recurrence_rule: RecurrenceRule
@@ -66,7 +68,7 @@ const EMPTY_FORM: CreateForm = {
   end_time: '',
   description: '',
   status: 'pending',
-  assigned_to_user_id: '',
+  assigned_to_user_ids: [],
   label_ids: [],
   participant_ids: [],
   recurrence_rule: '',
@@ -117,9 +119,10 @@ function defaultMeetingTimes(): { start_time: string; end_time: string } {
 export default function CreateEventModal({ isOpen, onClose, initialEventType, onCreated }: CreateEventModalProps) {
   // Super tasks are admin-only; only Admins may mark a new task as a super task.
   const isAdmin = useSelector((s: RootState) => s.auth.me?.role === 'Admin')
+  const meId = useSelector((s: RootState) => s.auth.me?.id)
 
   // -- Data fetched once --
-  const [users, setUsers] = useState<Array<{ id: number; full_name: string }>>([])
+  const [users, setUsers] = useState<UserForTask[]>([])
   const [taskLabels, setTaskLabels] = useState<TaskLabelType[]>([])
 
   // -- Form state --
@@ -146,7 +149,7 @@ export default function CreateEventModal({ isOpen, onClose, initialEventType, on
   useEffect(() => {
     const fetchUsers = async () => {
       try {
-        const { data } = await api.get<Array<{ id: number; full_name: string }>>('/users/for-tasks')
+        const { data } = await api.get<UserForTask[]>('/users/for-tasks')
         setUsers(data)
       } catch {
         setUsers([])
@@ -174,15 +177,17 @@ export default function CreateEventModal({ isOpen, onClose, initialEventType, on
     setNewLabelColor('#3B82F6')
     if (fileInputRef.current) fileInputRef.current.value = ''
 
+    // Like a new collection task: the creator is the default (primary) assignee.
+    const assigned_to_user_ids = meId ? [meId] : []
     if (initialEventType === 'meeting') {
       const times = defaultMeetingTimes()
       setTaskType('meeting')
-      setCreateForm({ ...EMPTY_FORM, start_time: times.start_time, end_time: times.end_time })
+      setCreateForm({ ...EMPTY_FORM, assigned_to_user_ids, start_time: times.start_time, end_time: times.end_time })
     } else {
       setTaskType('all_day')
-      setCreateForm({ ...EMPTY_FORM, date: todayDateString() })
+      setCreateForm({ ...EMPTY_FORM, assigned_to_user_ids, date: todayDateString() })
     }
-  }, [isOpen, initialEventType])
+  }, [isOpen, initialEventType, meId])
 
   // -- Set task type with sensible defaults --
   const setTaskTypeWithDefaults = useCallback((type: TaskTypeOption) => {
@@ -224,7 +229,7 @@ export default function CreateEventModal({ isOpen, onClose, initialEventType, on
     e.preventDefault()
     setCreateError(null)
 
-    if (!createForm.title.trim() || !createForm.assigned_to_user_id) {
+    if (!createForm.title.trim() || createForm.assigned_to_user_ids.length === 0) {
       setCreateError('נא למלא את כל השדות החובה')
       return
     }
@@ -270,7 +275,8 @@ export default function CreateEventModal({ isOpen, onClose, initialEventType, on
         description: createForm.description.trim() || undefined,
         status: createForm.status,
         event_type: 'task',
-        assigned_to_user_id: Number(createForm.assigned_to_user_id),
+        assigned_to_user_id: createForm.assigned_to_user_ids[0],
+        assigned_to_user_ids: createForm.assigned_to_user_ids,
         label_ids: createForm.label_ids,
         participant_ids: createForm.participant_ids,
         recurrence_rule: recurrence_rule || '',
@@ -311,7 +317,7 @@ export default function CreateEventModal({ isOpen, onClose, initialEventType, on
             required />
         </div>
 
-        {/* type + status + assigned */}
+        {/* type + status */}
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-0.5">סוג</label>
@@ -330,26 +336,22 @@ export default function CreateEventModal({ isOpen, onClose, initialEventType, on
               </label>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label htmlFor="ce-status" className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-0.5">מצב</label>
-              <select id="ce-status" value={createForm.status} onChange={(e) => setCreateForm(f => ({ ...f, status: e.target.value as TaskStatus }))}
-                className="w-full px-2 py-1.5 border rounded-lg text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
-                {(Object.keys(TASK_STATUS_LABELS) as TaskStatus[]).map((s) => (
-                  <option key={s} value={s}>{TASK_STATUS_LABELS[s]}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label htmlFor="ce-assigned" className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-0.5">מוקצה ל</label>
-              <select id="ce-assigned" value={createForm.assigned_to_user_id} onChange={(e) => setCreateForm(f => ({ ...f, assigned_to_user_id: e.target.value }))}
-                className="w-full px-2 py-1.5 border rounded-lg text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" required>
-                <option value="">בחר</option>
-                {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-              </select>
-            </div>
+          <div>
+            <label htmlFor="ce-status" className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-0.5">מצב</label>
+            <select id="ce-status" value={createForm.status} onChange={(e) => setCreateForm(f => ({ ...f, status: e.target.value as TaskStatus }))}
+              className="w-full px-2 py-1.5 border rounded-lg text-sm border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
+              {(Object.keys(TASK_STATUS_LABELS) as TaskStatus[]).map((s) => (
+                <option key={s} value={s}>{TASK_STATUS_LABELS[s]}</option>
+              ))}
+            </select>
           </div>
         </div>
+
+        <AssigneePicker
+          users={users}
+          selectedIds={createForm.assigned_to_user_ids}
+          onChange={(ids) => setCreateForm(f => ({ ...f, assigned_to_user_ids: ids }))}
+        />
 
         {/* labels */}
         <div>
