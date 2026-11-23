@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useSelector } from 'react-redux'
+import type { RootState } from '../../store'
 import api from '../../lib/api'
 import Modal from '../Modal'
 import { Paperclip, X } from 'lucide-react'
@@ -184,6 +186,7 @@ export default function CreateTaskModal({
   onCreated,
   onLabelsChanged,
 }: CreateTaskModalProps) {
+  const meId = useSelector((s: RootState) => s.auth.me?.id)
   const [createForm, setCreateForm] = useState<CreateTaskForm>({ ...EMPTY_FORM })
   const [taskType, setTaskType] = useState<TaskTypeOption>('meeting')
   // Building-reception linkage cascade: פרויקט → בניין → דירה (apartment optional).
@@ -210,7 +213,10 @@ export default function CreateTaskModal({
     setBuildingId(defaultBuildingId ?? null)
     setApartmentId(defaultApartmentId ?? null)
 
-    const assignees = defaultAssigneeId != null ? [defaultAssigneeId] : []
+    // Like a new collection task: the creator is the default (primary) assignee,
+    // unless the caller pre-selects someone explicitly.
+    const assigneeId = defaultAssigneeId ?? meId
+    const assignees = assigneeId != null ? [assigneeId] : []
     const resolvedType: TaskTypeOption = defaultBacklog ? 'no_date' : (defaults?.taskType ?? 'meeting')
     setTaskType(resolvedType)
 
@@ -237,6 +243,7 @@ export default function CreateTaskModal({
     defaultBuildingId,
     defaultApartmentId,
     defaultAssigneeId,
+    meId,
     defaultBacklog,
     defaults?.taskType,
     defaults?.startTime,
