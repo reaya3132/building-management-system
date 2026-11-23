@@ -140,8 +140,9 @@ export interface TaskEditModalProps {
   users: UserForTask[]
   /** Existing labels; the modal can also create new ones. */
   taskLabels: TaskLabelType[]
-  /** Called after the task is saved successfully (parent refetches). */
-  onSaved: () => void
+  /** Called after the task is saved successfully (parent refetches), with the
+   *  server's updated task so an open detail view can show it right away. */
+  onSaved: (updated?: Task) => void
   /** Called when the label set changed (create/delete) so the parent can refetch. */
   onLabelsChanged?: () => void
 }
@@ -260,7 +261,7 @@ export default function TaskEditModal({
       : buildRecurrencePayload(editForm)
     setEditSaving(true)
     try {
-      await api.put(`/tasks/${editingTask.id}`, {
+      const { data: updated } = await api.put<Task>(`/tasks/${editingTask.id}`, {
         title: editForm.title.trim(),
         start_time: start_time,
         end_time: end_time,
@@ -274,7 +275,7 @@ export default function TaskEditModal({
         ...recurrence,
         requires_closure_approval: editForm.requires_closure_approval,
       })
-      onSaved()
+      onSaved(updated)
       onClose()
     } catch (err: any) {
       setEditError(err.response?.data?.detail ?? 'שגיאה בעדכון משימה')
