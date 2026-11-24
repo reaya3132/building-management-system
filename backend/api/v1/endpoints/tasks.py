@@ -75,6 +75,7 @@ from backend.services.audit_service import AuditService
 from backend.services.notification_service import (
     _build_message_preview,
     create_task_assignment_notifications,
+    create_task_date_changed_notifications,
     create_task_message_notifications,
     create_task_archived_notifications,
     create_task_reminder,
@@ -1181,6 +1182,8 @@ async def update_task(
         raise HTTPException(status_code=403,
                             detail="Access denied. Only an assignee or admin can edit. Use respond to accept/decline.")
     update_data = data.model_dump(exclude_unset=True)
+    # The task's date before the edit (date only: a time change alone does not notify).
+    old_date = task.start_time.date() if task.start_time else None
     # Only admins can toggle super task flag
     if "is_super_task" in update_data and user.role != "Admin":
         update_data.pop("is_super_task", None)
@@ -1306,6 +1309,11 @@ async def update_task(
     # Re-fetch with eager loading so _task_to_out can access all relationships
     # (refresh() doesn't reload selectinload relations → MissingGreenlet in async)
     updated = await repo.get(task.id)
+    new_date = updated.start_time.date() if updated.start_time else None
+    if new_date != old_date:
+        # Same transaction as the update (committed at the end of the request);
+        # recipients are the assignees / participants as they are after the edit.
+        await create_task_date_changed_notifications(db, updated, user, old_date, new_date)
     return _task_to_out(updated)
 
 
