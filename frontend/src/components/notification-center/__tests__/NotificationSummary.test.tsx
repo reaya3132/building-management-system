@@ -164,6 +164,8 @@ describe('archived or deleted tasks: the notification only, no task loaded', () 
       'המשימה אינה זמינה עוד'],
     ['reminder on a deleted task', { type: 'task_reminder', task_id: null, task_kind: null, task_archived: null },
       'המשימה אינה זמינה עוד'],
+    ['date change on a deleted task', { type: 'task_date_changed', task_id: null, task_kind: null, task_archived: null },
+      'המשימה אינה זמינה עוד'],
   ]
 
   it.each(cases)('%s', (_label, extra, note) => {
@@ -177,6 +179,13 @@ describe('archived or deleted tasks: the notification only, no task loaded', () 
     expect(screen.getByRole('heading', { name: notification.title })).toBeInTheDocument()
     expect(api.get).not.toHaveBeenCalled()
     expect([loaded.task, loaded.collection]).toEqual([before.task, before.collection])
+  })
+
+  it('a date-change notification on an existing task can open the task', () => {
+    const notification = n({ type: 'task_date_changed', title: 'תאריך המשימה שונה: הכנת דוח',
+      body_preview: "תאריך המשימה 'הכנת דוח' שונה על ידי דנה כהן מ־24.11.2026 ל־28.11.2026" })
+    expect(canShowContent(notification)).toBe(true)
+    expect(taskStatusNote(notification)).toBeNull()
   })
 
   it('the archive snapshot shows its kept text, with neither task nor archiver', () => {
