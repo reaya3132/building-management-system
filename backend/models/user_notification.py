@@ -18,6 +18,10 @@ class NotificationType:
     # user and the time are kept in title / body / created_at, so the notification
     # stays complete after the task or that user is deleted.
     TASK_ARCHIVED = "task_archived"
+    # תאריך של משימה כללית שונה (כולל תזמון מה-Backlog והחזרה אליו). Like
+    # TASK_ARCHIVED, title / body keep the dates, the task title and the actor's
+    # name as text.
+    TASK_DATE_CHANGED = "task_date_changed"
 
 
 class UserNotification(Base):

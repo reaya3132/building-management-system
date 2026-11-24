@@ -1,5 +1,5 @@
 """Service for creating user notifications (e.g. on task assignment)."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -128,6 +128,57 @@ async def create_task_archived_notifications(
         body=f"סוג: {label} · אורכבה על ידי {actor.full_name}",
         archived_at=archived_at,
     )
+
+
+def _format_task_date(value: date) -> str:
+    return value.strftime("%d.%m.%Y")
+
+
+async def create_task_date_changed_notifications(
+    db: AsyncSession,
+    task: Task,
+    actor: User,
+    old_date: date | None,
+    new_date: date | None,
+) -> None:
+    """Notify everyone tied to a general task that its date changed, except the
+    user who changed it. Call only when ``old_date != new_date`` (dates, not
+    times), after the update, in the same transaction — recipients follow the
+    task's assignees / participants as they are after the edit.
+
+    ``old_date`` None = scheduled from the backlog; ``new_date`` None = moved
+    back to the backlog. The text keeps the dates, title and actor's name, so the
+    notification stays complete after the task or the user is deleted.
+    """
+    recipient_ids = _collect_task_recipient_ids(task, actor.id)
+    if not recipient_ids:
+        return
+    name = task.title
+    if old_date is None:
+        title = f"המשימה תוזמנה: {name}"
+        body = f"המשימה '{name}' תוזמנה ל־{_format_task_date(new_date)} על ידי {actor.full_name}"
+    elif new_date is None:
+        title = f"המשימה הוחזרה ל-Backlog: {name}"
+        body = f"המשימה '{name}' הוחזרה ל-Backlog על ידי {actor.full_name}"
+    else:
+        title = f"תאריך המשימה שונה: {name}"
+        body = (f"תאריך המשימה '{name}' שונה על ידי {actor.full_name} "
+                f"מ־{_format_task_date(old_date)} ל־{_format_task_date(new_date)}")
+    if task.recurrence_rule and new_date is not None:
+        # Occurrences are computed from start_time: the whole series moved.
+        body += " · משימה חוזרת: השינוי חל על כל הסדרה"
+
+    repo = NotificationRepository(db)
+    for recipient_id in recipient_ids:
+        await repo.create(UserNotification(
+            user_id=recipient_id,
+            from_user_id=actor.id,
+            task_id=task.id,
+            type=NotificationType.TASK_DATE_CHANGED,
+            title=title[:255],
+            body=body,
+        ))
+    await db.flush()
 
 
 def _build_message_preview(message_text: str, max_length: int = 120) -> str:

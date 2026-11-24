@@ -8,7 +8,7 @@ const TaskDetailPanel = lazy(() =>
 const CollectionTaskDetailPanel = lazy(() =>
   import('../collection/CollectionTaskDetailModal').then((m) => ({ default: m.CollectionTaskDetailPanel })))
 
-const TASK_TYPES = new Set(['task_message', 'task_assignment', 'task_reminder'])
+const TASK_TYPES = new Set(['task_message', 'task_assignment', 'task_reminder', 'task_date_changed'])
 
 /**
  * Whether the notification may open its task's full content. Never for:
