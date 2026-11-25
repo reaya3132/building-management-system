@@ -65,6 +65,9 @@ class LedgerItemCreate(BaseModel):
 
     subject: Annotated[Subject, BeforeValidator(_strip)]
     amount: Money
+    # Does ``amount`` include VAT? Omitted = included (the amount to pay is the amount
+    # entered). The rate is never sent: the server freezes the current VAT_RATE.
+    vat_included: bool = True
     sort_order: int | None = Field(default=None, ge=0)
 
 
@@ -73,13 +76,16 @@ class LedgerItemUpdate(BaseModel):
 
     subject: Annotated[Subject, BeforeValidator(_strip)] | None = None
     amount: Money | None = None
+    # Omitted = keep the item's VAT choice. Changing the amount of an item saved
+    # before VAT support requires it (explicit choice; see the service).
+    vat_included: bool | None = None
     sort_order: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _not_empty(self):
         if not self.model_fields_set:
             raise ValueError("at least one field must be provided")
-        for field in ("subject", "amount"):
+        for field in ("subject", "amount", "vat_included"):
             if field in self.model_fields_set and getattr(self, field) is None:
                 raise ValueError(f"{field} cannot be null")
         return self
@@ -95,6 +101,8 @@ class CollectionTaskCreate(BaseModel):
     billing_month: BillingMonth
     assignee_ids: list[int] = Field(min_length=1)
     initial_amount: Money | None = None
+    # ``single`` only: does initial_amount include VAT? Omitted = included.
+    initial_vat_included: bool | None = None
     items: list[LedgerItemCreate] = []
 
     @model_validator(mode="after")
@@ -104,8 +112,12 @@ class CollectionTaskCreate(BaseModel):
                 raise ValueError("initial_amount is required for a single collection task")
             if self.items:
                 raise ValueError("items are allowed only for a ledger collection task")
+            if self.initial_vat_included is None:
+                self.initial_vat_included = True
         elif self.initial_amount is not None:
             raise ValueError("initial_amount is not allowed for a ledger collection task")
+        elif self.initial_vat_included is not None:
+            raise ValueError("initial_vat_included is not allowed for a ledger collection task")
         return self
 
 
@@ -149,6 +161,15 @@ class AdjustmentCreate(BaseModel):
     amount: SignedMoney
     # Required detail of the addition / reduction; stored and shown in the history.
     note: Annotated[str, BeforeValidator(_strip), Field(min_length=1)]
+    # Does ``amount`` include VAT? Omitted = included. The rate is never sent.
+    vat_included: bool = True
+
+
+class AdjustmentVatUpdate(BaseModel):
+    """The VAT choice of an existing adjustment (its amount and note never change)."""
+    model_config = ConfigDict(extra="forbid")
+
+    vat_included: bool
 
 
 class InitialAmountUpdate(BaseModel):
@@ -156,6 +177,9 @@ class InitialAmountUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     initial_amount: Money
+    # Omitted = keep the current VAT choice. Changing an amount saved before VAT
+    # support requires it (explicit choice; see the service).
+    initial_vat_included: bool | None = None
 
 
 # ── Output ───────────────────────────────────────────────────────────────────
@@ -183,7 +207,18 @@ class ProjectOption(BaseModel):
     is_active: bool = True
 
 
-class AdjustmentOut(BaseModel):
+class VatFields(BaseModel):
+    """VAT of one amount (services/vat.py). ``vat_included``/``vat_rate`` are the
+    frozen facts; ``net_amount``/``vat_amount`` are None when they are unknown
+    (an amount saved before VAT support). ``gross_amount`` is the amount to pay."""
+    vat_included: bool | None = None
+    vat_rate: Decimal | None = None
+    net_amount: Decimal | None = None
+    vat_amount: Decimal | None = None
+    gross_amount: Decimal
+
+
+class AdjustmentOut(VatFields):
     id: int
     amount: Decimal
     note: str | None = None
@@ -193,7 +228,7 @@ class AdjustmentOut(BaseModel):
     _serialize_created_at = field_serializer("created_at")(staticmethod(to_utc_z))
 
 
-class LedgerItemOut(BaseModel):
+class LedgerItemOut(VatFields):
     id: int
     subject: str
     amount: Decimal
@@ -231,6 +266,12 @@ class CollectionTaskListItem(BaseModel):
 class CollectionTaskDetail(CollectionTaskListItem):
     description: str | None = None
     initial_amount: Decimal | None = None
+    # ``single``: VAT of the initial amount (each adjustment carries its own).
+    initial_vat: VatFields | None = None
+    # ``ledger``: totals of the active items; None when any of them has no known VAT.
+    # ``total_amount`` stays the amount to pay in both types.
+    total_net_amount: Decimal | None = None
+    total_vat_amount: Decimal | None = None
     adjustments: list[AdjustmentOut] = []
     ledger_items: list[LedgerItemOut] = []
     attachments: list[TaskAttachmentOut] = []
@@ -272,7 +313,13 @@ class AdjustmentResult(BaseModel):
 
 class InitialAmountResult(BaseModel):
     initial_amount: Decimal
+    initial_vat: VatFields
     total_amount: Decimal
+
+
+class VatRateOut(BaseModel):
+    """The rate in force now (VAT_RATE) — for previews only; the server freezes it."""
+    vat_rate: Decimal
 
 
 class LedgerItemResult(BaseModel):
@@ -307,6 +354,11 @@ class StatementLineIn(BaseModel):
 
     subject: Annotated[Subject, BeforeValidator(_strip)]
     amount: Money
+    # The ledger item this line came from (its frozen VAT rate is used), or None for
+    # a line added in the export window (the current VAT_RATE). A rate is never sent.
+    item_id: int | None = None
+    # Omitted: an item's own choice; a new line = included.
+    vat_included: bool | None = None
 
 
 class StatementRequest(BaseModel):

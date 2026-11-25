@@ -1,6 +1,8 @@
 import React from 'react'
 import { X } from 'lucide-react'
 import ModalOverlay from '../ui/ModalOverlay'
+import { cn } from '../../lib/utils'
+import { agorotToAmount, formatILS, parseMoneyInput, vatBreakdown } from './collectionUtils'
 
 interface CollectionModalProps {
   isOpen: boolean
@@ -118,5 +120,79 @@ export function ErrorBanner({ message }: { message: string | null }) {
     <div role="alert" className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-300">
       {message}
     </div>
+  )
+}
+
+/**
+ * "Includes VAT?" choice of one amount. `value` null = no choice yet (an amount
+ * saved before VAT support, which must be chosen explicitly before its amount changes).
+ */
+export function VatChoice({
+  value,
+  onChange,
+  disabled,
+  label = 'מע״מ',
+}: {
+  value: boolean | null
+  onChange: (included: boolean) => void
+  disabled?: boolean
+  label?: string
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} className="inline-flex shrink-0 rounded-xl border border-gray-300 dark:border-gray-600 p-0.5">
+      {([[true, 'כולל מע״מ'], [false, 'ללא מע״מ']] as const).map(([included, text]) => (
+        <button
+          key={text}
+          type="button"
+          role="radio"
+          aria-checked={value === included}
+          disabled={disabled}
+          onClick={() => onChange(included)}
+          className={cn(
+            'px-2.5 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap disabled:opacity-60',
+            value === included
+              ? 'bg-emerald-600 text-white'
+              : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+          )}
+        >
+          {text}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** The "כולל מע״מ" marker shown beside an amount to pay whose VAT is known. */
+export function VatIncludedTag() {
+  return <span className="text-xs font-normal text-gray-500 dark:text-gray-400 whitespace-nowrap">כולל מע״מ</span>
+}
+
+/**
+ * An amount to pay (VAT included), with the "כולל מע״מ" marker when its VAT is
+ * known. An amount saved before VAT support (`vatKnown` false) shows no marker.
+ * The amount is isolated (<bdi dir="ltr">) so RTL text never reorders it.
+ * The marker sits below the amount; `inline` keeps it beside it (inside a sentence).
+ */
+export function AmountWithVat({ amount, vatKnown, className, inline = false }: { amount: string | null | undefined; vatKnown: boolean; className?: string; inline?: boolean }) {
+  return (
+    <span className={cn('whitespace-nowrap', inline ? 'inline-flex items-baseline gap-1.5' : 'inline-flex flex-col items-end leading-tight')}>
+      <bdi dir="ltr" className={cn('tabular-nums', className)}>{formatILS(amount)}</bdi>
+      {vatKnown && <VatIncludedTag />}
+    </span>
+  )
+}
+
+/**
+ * Preview of a typed amount's amount to pay (before it is saved; the server
+ * computes the saved one). Shows nothing until the amount, the choice and the rate are valid.
+ */
+export function VatPreviewText({ amount, vatIncluded, rate }: { amount: string; vatIncluded: boolean | null; rate: string | null }) {
+  const value = parseMoneyInput(amount)
+  const preview = value ? vatBreakdown(value, vatIncluded, rate) : null
+  if (!preview || preview.vatAgorot === null) return null
+  return (
+    <p className="text-xs text-gray-500 dark:text-gray-400">
+      לתשלום: <AmountWithVat amount={agorotToAmount(preview.grossAgorot)} vatKnown inline className="font-semibold text-gray-700 dark:text-gray-200" />
+    </p>
   )
 }

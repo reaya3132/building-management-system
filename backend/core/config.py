@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pydantic import BaseModel, Field, model_validator, ConfigDict
 import os
@@ -29,6 +30,27 @@ def _normalize_database_uri(uri: str) -> str:
     if uri.startswith("postgresql://"):
         return "postgresql+asyncpg://" + uri[len("postgresql://") :]
     return uri
+
+
+def parse_vat_rate(raw: str | None) -> Decimal:
+    """VAT_RATE: the current VAT rate as a fraction, e.g. ``0.18`` for 18%.
+
+    Required, with no silent default: the server refuses to start when it is unset
+    or invalid. Read as a Decimal (never a float), 0 <= rate < 1, at most four
+    decimal places (it is stored with every collection amount as NUMERIC(5,4), so a
+    later change never alters an amount already saved).
+    """
+    if raw is None or not raw.strip():
+        raise ValueError("VAT_RATE is not set. Set it to the current VAT rate as a fraction, e.g. VAT_RATE=0.18")
+    try:
+        value = Decimal(raw.strip())
+    except InvalidOperation:
+        raise ValueError(f"VAT_RATE is not a number: {raw!r}") from None
+    if not value.is_finite() or value < 0 or value >= 1:
+        raise ValueError(f"VAT_RATE must be a fraction between 0 and 1 (e.g. 0.18): {raw!r}")
+    if value != value.quantize(Decimal("0.0001")):
+        raise ValueError(f"VAT_RATE may have at most four decimal places: {raw!r}")
+    return value.quantize(Decimal("0.0001"))
 
 
 def parse_notification_center_start(raw: str | None) -> datetime | None:
@@ -70,6 +92,9 @@ class Settings(BaseModel):
     # An invalid value fails here, at startup.
     NOTIFICATION_CENTER_START: datetime | None = Field(
         default_factory=lambda: parse_notification_center_start(os.getenv("NOTIFICATION_CENTER_START")))
+
+    # The current VAT rate (see parse_vat_rate). Unset or invalid fails here, at startup.
+    VAT_RATE: Decimal = Field(default_factory=lambda: parse_vat_rate(os.getenv("VAT_RATE")))
 
     @property
     def requires_notification_center_start(self) -> bool:

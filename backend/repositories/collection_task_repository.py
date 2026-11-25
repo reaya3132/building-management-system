@@ -27,6 +27,7 @@ from backend.models.project import Project
 from backend.models.task import Task, TaskKind, TaskMessage, TaskMessageRead
 from backend.models.user import User
 from backend.repositories.task_repository import TaskRepository
+from backend.services.vat import gross_amount_sql
 
 ZERO = Decimal("0.00")
 
@@ -38,15 +39,24 @@ def _parent_project():
 
 
 def total_amount_expr():
-    """The task total, from the source rows only."""
+    """The task total (the amount to pay), from the source rows only.
+
+    VAT follows services/vat.py (``gross_amount_sql``): the initial amount, each
+    adjustment and each ledger item are summed as their amount to pay. Amounts saved
+    before VAT support (NULL VAT facts) count exactly as stored."""
     adjustments = (
-        select(func.coalesce(func.sum(CollectionAmountAdjustment.amount), 0))
+        select(func.coalesce(func.sum(gross_amount_sql(
+            CollectionAmountAdjustment.amount, CollectionAmountAdjustment.vat_included,
+            CollectionAmountAdjustment.vat_rate,
+        )), 0))
         .where(CollectionAmountAdjustment.task_id == CollectionTaskDetails.task_id)
         .correlate(CollectionTaskDetails)
         .scalar_subquery()
     )
     items = (
-        select(func.coalesce(func.sum(CollectionLedgerItem.amount), 0))
+        select(func.coalesce(func.sum(gross_amount_sql(
+            CollectionLedgerItem.amount, CollectionLedgerItem.vat_included, CollectionLedgerItem.vat_rate,
+        )), 0))
         .where(
             CollectionLedgerItem.task_id == CollectionTaskDetails.task_id,
             CollectionLedgerItem.archived_at.is_(None),
@@ -56,7 +66,8 @@ def total_amount_expr():
     )
     return case(
         (CollectionTaskDetails.collection_type == CollectionType.SINGLE,
-         CollectionTaskDetails.initial_amount + adjustments),
+         gross_amount_sql(CollectionTaskDetails.initial_amount, CollectionTaskDetails.initial_vat_included,
+                          CollectionTaskDetails.initial_vat_rate) + adjustments),
         else_=items,
     )
 
@@ -129,6 +140,14 @@ class CollectionTaskRepository:
             select(total_amount_expr()).where(CollectionTaskDetails.task_id == task_id)
         )).scalar_one_or_none()
         return _money(value)
+
+    async def get_adjustment(self, task_id: int, adjustment_id: int) -> CollectionAmountAdjustment | None:
+        result = await self.db.execute(
+            select(CollectionAmountAdjustment).where(
+                CollectionAmountAdjustment.task_id == task_id, CollectionAmountAdjustment.id == adjustment_id,
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def list_adjustments(self, task_id: int) -> list[CollectionAmountAdjustment]:
         result = await self.db.execute(

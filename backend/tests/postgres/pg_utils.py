@@ -33,6 +33,10 @@ ROLLBACK = MIGRATIONS / "rollback_legal_proceedings.sql"
 COLLECTION_MIGRATION = MIGRATIONS / "add_collection_tasks.sql"
 UPGRADE = MIGRATIONS / "upgrade_ledger_items_and_legal_fields.sql"
 UPGRADE_ROLLBACK = MIGRATIONS / "rollback_ledger_items_and_legal_fields.sql"
+VAT_MIGRATION = MIGRATIONS / "collection_vat.sql"
+VAT_ROLLBACK = MIGRATIONS / "rollback_collection_vat.sql"
+ADJ_VAT_MIGRATION = MIGRATIONS / "collection_adjustments_vat.sql"
+ADJ_VAT_ROLLBACK = MIGRATIONS / "rollback_collection_adjustments_vat.sql"
 MARKER = "owner:add_legal_proceedings"
 LEGAL_TABLES = ("contacts", "legal_proceedings", "legal_proceeding_stages",
                 "legal_proceeding_entries", "legal_proceeding_assignees")

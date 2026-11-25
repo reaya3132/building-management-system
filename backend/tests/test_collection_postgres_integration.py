@@ -148,7 +148,9 @@ async def _check_constraints(engine: AsyncEngine) -> dict[str, str]:
     async with engine.connect() as conn:
         rows = await conn.execute(text(
             "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
-            "WHERE conrelid = 'collection_amount_adjustments'::regclass AND contype = 'c'"))
+            "WHERE conrelid = 'collection_amount_adjustments'::regclass AND contype = 'c' "
+            # The amount rule only; the VAT checks belong to collection_adjustments_vat.sql.
+            "AND conname LIKE 'ck_caa_amount%'"))
         return dict(rows.all())
 
 
