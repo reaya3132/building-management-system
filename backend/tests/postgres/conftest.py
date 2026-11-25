@@ -44,6 +44,9 @@ def migrated_template() -> str:
         await pg_utils.production_like(_TEMPLATE, seed_documents=False)
         await pg_utils.migrate(_TEMPLATE)
         await pg_utils.upgrade(_TEMPLATE)
+        for path in (pg_utils.VAT_MIGRATION, pg_utils.ADJ_VAT_MIGRATION):  # deploy order: after the upgrade
+            run = await pg_utils.run_sql_file(_TEMPLATE, path)
+            assert run.ok, f"{path.name}: {run.error}"
     asyncio.run(build())
     yield _TEMPLATE
     asyncio.run(pg_utils.drop_db(_TEMPLATE))

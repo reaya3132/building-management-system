@@ -34,15 +34,31 @@ export interface CollectionProjectOption {
   is_active: boolean
 }
 
-export interface CollectionAdjustment {
+export interface CollectionAdjustment extends CollectionVatFields {
   id: number
+  /** Signed: > 0 an addition, < 0 a reduction (`gross_amount` keeps the sign). */
   amount: string
   note?: string | null
   created_by?: CollectionUserBrief | null
   created_at: string
 }
 
-export interface CollectionLedgerItem {
+/**
+ * VAT of one amount, computed by the server (backend/services/vat.py).
+ * `vat_included`/`vat_rate` null = saved before VAT support: no breakdown
+ * (`net_amount`/`vat_amount` null) and `gross_amount` = the amount as stored.
+ */
+export interface CollectionVatFields {
+  vat_included: boolean | null
+  /** The rate frozen with the amount, e.g. "0.1800". */
+  vat_rate: string | null
+  net_amount: string | null
+  vat_amount: string | null
+  /** The amount to pay. */
+  gross_amount: string
+}
+
+export interface CollectionLedgerItem extends CollectionVatFields {
   id: number
   subject: string
   amount: string
@@ -74,6 +90,11 @@ export interface CollectionTaskListItem {
 export interface CollectionTaskDetail extends CollectionTaskListItem {
   description?: string | null
   initial_amount?: string | null
+  /** `single`: VAT of the initial amount only (adjustments never carry VAT). */
+  initial_vat?: CollectionVatFields | null
+  /** `ledger`: totals of the active items; null when any item has no known VAT. */
+  total_net_amount?: string | null
+  total_vat_amount?: string | null
   adjustments: CollectionAdjustment[]
   ledger_items: CollectionLedgerItem[]
   attachments: TaskAttachmentType[]
@@ -131,6 +152,10 @@ export interface CollectionMonthCount {
 export interface StatementLine {
   subject: string
   amount: string
+  /** The ledger item the line came from (its frozen VAT rate is used), or null for a new line. */
+  item_id?: number | null
+  /** Omitted: the item's own choice (a new line: included). */
+  vat_included?: boolean | null
 }
 
 export interface CollectionListFilters {
@@ -148,6 +173,8 @@ export interface CollectionListFilters {
 export interface LedgerItemInput {
   subject: string
   amount: string
+  /** Omitted on create = VAT included. The rate is never sent: the server freezes it. */
+  vat_included?: boolean
   sort_order?: number
 }
 
@@ -159,6 +186,8 @@ export interface CollectionTaskCreateInput {
   billing_month: string
   assignee_ids: number[]
   initial_amount?: string
+  /** `single` only; omitted = VAT included. */
+  initial_vat_included?: boolean
   items?: LedgerItemInput[]
 }
 
@@ -229,6 +258,12 @@ export const CollectionAPI = {
     }
   },
 
+  /** The VAT rate in force now ("0.1800"), for form previews only. */
+  async vatRate(): Promise<string> {
+    const { data } = await api.get<{ vat_rate: string }>(`${BASE}/vat-rate`)
+    return data.vat_rate
+  },
+
   async projectOptions(): Promise<CollectionProjectOption[]> {
     const { data } = await api.get<CollectionProjectOption[]>(`${BASE}/project-options`)
     return data
@@ -279,20 +314,35 @@ export const CollectionAPI = {
     return data
   },
 
-  /** `note` is required (the server rejects an empty / whitespace-only one). */
-  async addAdjustment(taskId: number, amount: string, note: string) {
+  /**
+   * `note` is required (the server rejects an empty / whitespace-only one).
+   * `vatIncluded` omitted = VAT included; the server freezes the rate.
+   */
+  async addAdjustment(taskId: number, amount: string, note: string, vatIncluded?: boolean) {
     const { data } = await api.post<{ adjustment: CollectionAdjustment; total_amount: string }>(
       `${BASE}/${taskId}/adjustments`,
-      { amount, note: note.trim() }
+      { amount, note: note.trim(), ...(vatIncluded === undefined ? {} : { vat_included: vatIncluded }) }
     )
     return data
   },
 
-  /** `single` only: a positive amount; the server keeps the total ≥ 0. */
-  async updateInitialAmount(taskId: number, initialAmount: string) {
-    const { data } = await api.patch<{ initial_amount: string; total_amount: string }>(
+  /** Only the VAT choice of an adjustment can change (never its amount or note). */
+  async updateAdjustmentVat(taskId: number, adjustmentId: number, vatIncluded: boolean) {
+    const { data } = await api.patch<{ adjustment: CollectionAdjustment; total_amount: string }>(
+      `${BASE}/${taskId}/adjustments/${adjustmentId}`,
+      { vat_included: vatIncluded }
+    )
+    return data
+  },
+
+  /**
+   * `single` only: a positive amount; the server keeps the total ≥ 0.
+   * `vatIncluded` omitted = keep the current choice (required for an amount saved before VAT support).
+   */
+  async updateInitialAmount(taskId: number, initialAmount: string, vatIncluded?: boolean) {
+    const { data } = await api.patch<{ initial_amount: string; initial_vat: CollectionVatFields; total_amount: string }>(
       `${BASE}/${taskId}/initial-amount`,
-      { initial_amount: initialAmount }
+      { initial_amount: initialAmount, ...(vatIncluded === undefined ? {} : { initial_vat_included: vatIncluded }) }
     )
     return data
   },

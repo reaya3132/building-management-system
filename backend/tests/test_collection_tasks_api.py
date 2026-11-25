@@ -26,6 +26,8 @@ from backend.services.audit_service import AuditService
 from backend.services.collection_task_service import CollectionTaskService
 
 API = "/api/v1/collection-tasks"
+# The VAT facts logged with an amount saved with the default choice (included) at 18%.
+VAT = {"vat_included": True, "vat_rate": "0.1800"}
 MONTH = "2026-10"
 
 
@@ -401,7 +403,9 @@ class TestAmounts:
         assert [a["amount"] for a in detail["adjustments"]] == ["-400.00", "-600.00", "25.00"]
         logged = await _audit_details(test_db, task["id"], "adjustment_added")
         assert [d["after"] for d in logged] == [
-            {"amount": "-400.00", "note": "הנחה"}, {"amount": "-600.00", "note": "פירוט"}, {"amount": "25.00", "note": "פירוט"},
+            # Each adjustment's VAT facts are logged too (omitted choice = included).
+            {"amount": "-400.00", "note": "הנחה", **VAT}, {"amount": "-600.00", "note": "פירוט", **VAT},
+            {"amount": "25.00", "note": "פירוט", **VAT},
         ]
 
     async def test_adjustment_note_is_required(self, test_client, test_db, admin_user, project):
@@ -422,7 +426,7 @@ class TestAmounts:
         assert [(a["amount"], a["note"]) for a in detail["adjustments"]] == [("50.00", "קנס איחור"), ("-20.00", "הנחה")]
         logged = await _audit_details(test_db, task["id"], "adjustment_added")
         assert [d["after"] for d in logged] == [
-            {"amount": "50.00", "note": "קנס איחור"}, {"amount": "-20.00", "note": "הנחה"},
+            {"amount": "50.00", "note": "קנס איחור", **VAT}, {"amount": "-20.00", "note": "הנחה", **VAT},
         ]
         history = (await test_client.get(f"{API}/{task['id']}/history", headers=_auth(admin_user))).json()["items"]
         notes = {e["details"]["after"]["note"] for e in history if e["action"] == "adjustment_added"}
@@ -436,7 +440,10 @@ class TestAmounts:
         changed = await test_client.patch(f"{base}/initial-amount", headers=_auth(admin_user),
                                           json={"initial_amount": "500.00"})
         assert changed.status_code == 200
-        assert changed.json() == {"initial_amount": "500.00", "total_amount": "200.00"}
+        body = changed.json()
+        assert (body["initial_amount"], body["total_amount"]) == ("500.00", "200.00")
+        # The VAT choice (omitted = included) is kept; the rate is frozen with the new amount.
+        assert body["initial_vat"]["vat_included"] is True and body["initial_vat"]["gross_amount"] == "500.00"
 
         # Down to exactly the reductions (total 0) is allowed; below that is not.
         assert (await test_client.patch(f"{base}/initial-amount", headers=_auth(admin_user),
@@ -455,8 +462,8 @@ class TestAmounts:
         assert actions[-2:] == ["initial_amount_changed", "initial_amount_changed"]
         logged = await _audit_details(test_db, task["id"], "initial_amount_changed")
         assert logged == [
-            {"before": {"initial_amount": "1000.00"}, "after": {"initial_amount": "500.00"}},
-            {"before": {"initial_amount": "500.00"}, "after": {"initial_amount": "300.00"}},
+            {"before": {"initial_amount": "1000.00", **VAT}, "after": {"initial_amount": "500.00", **VAT}},
+            {"before": {"initial_amount": "500.00", **VAT}, "after": {"initial_amount": "300.00", **VAT}},
         ]
 
     async def test_initial_amount_rules(self, test_client, admin_user, member_user, project):
@@ -539,7 +546,7 @@ class TestAmounts:
         history = (await test_client.get(f"{API}/{task['id']}/history", headers=_auth(admin_user))).json()
         updated = [e for e in history["items"] if e["action"] == "ledger_item_updated"]
         assert len(updated) == 1
-        assert updated[0]["details"] == {"before": {"amount": "20.00"}, "after": {"amount": "20.01"},
+        assert updated[0]["details"] == {"before": {"amount": "20.00", **VAT}, "after": {"amount": "20.01", **VAT},
                                          "item_id": item_id}
 
 

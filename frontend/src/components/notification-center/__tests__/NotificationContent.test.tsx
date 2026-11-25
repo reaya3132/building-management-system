@@ -22,7 +22,7 @@ const collection = vi.hoisted(() => ({
   get: vi.fn(() => Promise.reject(Object.assign(new Error('403'), { response: { status: 403, data: { detail: 'Access denied' } } }))),
 }))
 vi.mock('../../../lib/collectionApi', () => ({
-  CollectionAPI: { get: collection.get, history: vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 30 })) },
+  CollectionAPI: { vatRate: vi.fn(async () => '0.1800'), get: collection.get, history: vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 30 })) },
 }))
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('react-router-dom', async (orig) => ({ ...(await orig<any>()), useNavigate: () => navigate }))

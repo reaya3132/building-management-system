@@ -4,7 +4,8 @@ from __future__ import annotations
 import pytest
 
 from backend.tests.postgres import pg_utils as pg
-from backend.tests.postgres.pg_utils import COLLECTION_MIGRATION, CONTACTS_MIGRATION, MIGRATION, ROLLBACK, UPGRADE, UPGRADE_ROLLBACK
+from backend.tests.postgres.pg_utils import (COLLECTION_MIGRATION, CONTACTS_MIGRATION, MIGRATION, ROLLBACK, UPGRADE,
+                                             UPGRADE_ROLLBACK, VAT_MIGRATION)
 from backend.tests.postgres.test_legal_migration_pg import _ok, _stops, dbs  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.asyncio
@@ -49,6 +50,7 @@ async def test_upgraded_table_matches_the_model(dbs):
     upgraded = await dbs("up_model")
     await _previous_state(upgraded)
     await _ok(upgraded, UPGRADE)
+    await _ok(upgraded, VAT_MIGRATION)  # the VAT columns of ledger_items come from their own file
     modelled = await dbs("up_fresh", "none")
     await pg.create_db(modelled)
     await pg.create_all(modelled, include_legal=True, ledger=True)

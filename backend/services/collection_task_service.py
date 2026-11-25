@@ -7,10 +7,17 @@ written together or not at all. Changes to amounts or ledger items first take a
 row lock on the task's details row, serializing concurrent financial writes.
 
 Rules (see the module spec):
-- ``single``: positive, editable initial amount + append-only adjustments
-  (additions > 0, reductions < 0). The total (initial + adjustments) may be 0
-  but never negative; both changes check it under the same details-row lock.
+- ``single``: positive, editable initial amount + adjustments (additions > 0,
+  reductions < 0) whose amount and note never change. The total (initial +
+  adjustments, each as its amount to pay) may be 0 but never negative; every
+  change checks it under the same details-row lock.
 - ``ledger``: subject/amount items, edited in place or archived — never deleted.
+- VAT (services/vat.py): the initial amount and each ledger item carry their own
+  "includes VAT?" choice and the VAT_RATE frozen when the amount or the choice is
+  set; editing only a subject keeps them. An amount saved before VAT support
+  (NULL facts) keeps them NULL until its amount changes, which then requires an
+  explicit choice. Each adjustment carries its own choice too; changing it (the
+  only edit an adjustment allows) freezes the rate in force then.
 - Closed tasks lock amounts and items; archived tasks accept only unarchive.
 
 Access follows the regular tasks exactly (``services/task_access``): Admin or an
@@ -44,6 +51,7 @@ from backend.repositories.task_repository import TaskRepository
 from backend.services.notification_service import create_task_archived_notifications
 from backend.schemas.collection_task import (
     AdjustmentCreate,
+    AdjustmentVatUpdate,
     InitialAmountUpdate,
     CollectionTaskCreate,
     CollectionTaskUpdate,
@@ -52,6 +60,7 @@ from backend.schemas.collection_task import (
 )
 from backend.services.audit_service import AuditService
 from backend.services.task_access import can_access_task, can_manage_task, is_task_assignee
+from backend.services.vat import current_vat_rate, vat_breakdown
 
 # Displayed collection status <-> stored task status (regular-task meaning untouched).
 STATUS_TO_STORED = {
@@ -71,6 +80,16 @@ def collection_error(status_code: int, code: str, message: str, **extra) -> HTTP
 def _money(amount) -> str:
     """Amounts are logged as fixed two-decimal strings ("20.00")."""
     return f"{amount:.2f}"
+
+
+def _vat_log(vat_included: bool | None, vat_rate: Decimal | None) -> dict:
+    """The VAT facts of an amount, as written to the history."""
+    return {"vat_included": vat_included, "vat_rate": str(vat_rate) if vat_rate is not None else None}
+
+
+def _vat_choice_required() -> HTTPException:
+    return collection_error(422, "vat_choice_required",
+                            "Choose whether the amount includes VAT: it was saved before VAT support")
 
 
 def _changed(before: dict, after: dict) -> tuple[dict, dict]:
@@ -208,18 +227,24 @@ class CollectionTaskService:
         self.db.add(task)
         await self.db.flush()
 
+        rate = current_vat_rate()
+        single = data.collection_type == CollectionType.SINGLE
         self.db.add(CollectionTaskDetails(
             task_id=task.id,
             collection_type=data.collection_type,
             project_id=data.project_id,
             billing_month=data.billing_month,
             initial_amount=data.initial_amount,
+            initial_vat_included=data.initial_vat_included if single else None,
+            initial_vat_rate=rate if single else None,
         ))
         for index, item in enumerate(data.items):
             self.db.add(CollectionLedgerItem(
                 task_id=task.id,
                 subject=item.subject,
                 amount=item.amount,
+                vat_included=item.vat_included,
+                vat_rate=rate,
                 sort_order=item.sort_order if item.sort_order is not None else index,
                 created_by_user_id=self.user.id,
             ))
@@ -233,7 +258,9 @@ class CollectionTaskService:
             "billing_month": data.billing_month.isoformat(),
             "assignee_ids": [u.id for u in assignees],
             "initial_amount": _money(data.initial_amount) if data.initial_amount is not None else None,
-            "items": [{"subject": i.subject, "amount": _money(i.amount)} for i in data.items],
+            **({"initial_vat": _vat_log(data.initial_vat_included, rate)} if single else {}),
+            "items": [{"subject": i.subject, "amount": _money(i.amount), **_vat_log(i.vat_included, rate)}
+                      for i in data.items],
         }})
         await self._notify_assigned(task, [u.id for u in assignees])
         return task.id
@@ -358,16 +385,48 @@ class CollectionTaskService:
     async def add_adjustment(self, task_id: int, data: AdjustmentCreate) -> CollectionAmountAdjustment:
         task = await self.load_for_edit(task_id)
         await self._locked_details_for_money(task, CollectionType.SINGLE)
+        rate = current_vat_rate()
         if data.amount < 0:
             # Under the details-row lock: concurrent amount changes are serialized.
-            self._ensure_total_not_negative(await self.repo.total_for(task.id) + data.amount)
+            gross = vat_breakdown(data.amount, data.vat_included, rate).gross
+            self._ensure_total_not_negative(await self.repo.total_for(task.id) + gross)
         adjustment = CollectionAmountAdjustment(
-            task_id=task.id, amount=data.amount, note=data.note, created_by_user_id=self.user.id,
+            task_id=task.id, amount=data.amount, note=data.note,
+            vat_included=data.vat_included, vat_rate=rate, created_by_user_id=self.user.id,
         )
         self.db.add(adjustment)
         await self.db.flush()
         await self._log(task.id, CollectionEvent.ADJUSTMENT_ADDED, {
-            "after": {"amount": _money(data.amount), "note": data.note}, "adjustment_id": adjustment.id,
+            "after": {"amount": _money(data.amount), "note": data.note, **_vat_log(data.vat_included, rate)},
+            "adjustment_id": adjustment.id,
+        })
+        await self.db.refresh(adjustment, ["created_by_user"])
+        return adjustment
+
+    async def update_adjustment_vat(self, task_id: int, adjustment_id: int,
+                                    data: AdjustmentVatUpdate) -> CollectionAmountAdjustment:
+        """Change only the VAT choice of an adjustment (its amount and note never
+        change); the rate in force now is frozen with it. An adjustment saved before
+        VAT support gets its first choice this way."""
+        task = await self.load_for_edit(task_id)
+        await self._locked_details_for_money(task, CollectionType.SINGLE)
+        adjustment = await self.repo.get_adjustment(task.id, adjustment_id)
+        if adjustment is None:
+            raise collection_error(404, "adjustment_not_found", "Adjustment not found")
+        if adjustment.vat_included == data.vat_included:
+            return adjustment
+        old_included, old_rate = adjustment.vat_included, adjustment.vat_rate
+        new_rate = current_vat_rate()
+        old_gross = vat_breakdown(adjustment.amount, old_included, old_rate).gross
+        new_gross = vat_breakdown(adjustment.amount, data.vat_included, new_rate).gross
+        self._ensure_total_not_negative(await self.repo.total_for(task.id) - old_gross + new_gross)
+        adjustment.vat_included = data.vat_included
+        adjustment.vat_rate = new_rate
+        await self.db.flush()
+        await self._log(task.id, CollectionEvent.ADJUSTMENT_VAT_CHANGED, {
+            "before": {"amount": _money(adjustment.amount), **_vat_log(old_included, old_rate)},
+            "after": {"amount": _money(adjustment.amount), **_vat_log(data.vat_included, new_rate)},
+            "adjustment_id": adjustment.id,
         })
         await self.db.refresh(adjustment, ["created_by_user"])
         return adjustment
@@ -376,15 +435,25 @@ class CollectionTaskService:
         task = await self.load_for_edit(task_id)
         details = await self._locked_details_for_money(task, CollectionType.SINGLE)
         old = details.initial_amount
-        if old == data.initial_amount:
+        old_included, old_rate = details.initial_vat_included, details.initial_vat_rate
+        amount_changed = old != data.initial_amount
+        new_included = old_included if data.initial_vat_included is None else data.initial_vat_included
+        if not amount_changed and new_included == old_included:
             return
-        adjustments_sum = await self.repo.total_for(task.id) - old
-        self._ensure_total_not_negative(data.initial_amount + adjustments_sum)
+        if new_included is None:  # an amount saved before VAT support: explicit choice
+            raise _vat_choice_required()
+        new_rate = current_vat_rate()
+        # Total = initial amount to pay + adjustments (which carry no VAT).
+        adjustments_sum = await self.repo.total_for(task.id) - vat_breakdown(old, old_included, old_rate).gross
+        self._ensure_total_not_negative(
+            vat_breakdown(data.initial_amount, new_included, new_rate).gross + adjustments_sum)
         details.initial_amount = data.initial_amount
+        details.initial_vat_included = new_included
+        details.initial_vat_rate = new_rate
         await self.db.flush()
         await self._log(task.id, CollectionEvent.INITIAL_AMOUNT_CHANGED, {
-            "before": {"initial_amount": _money(old)},
-            "after": {"initial_amount": _money(data.initial_amount)},
+            "before": {"initial_amount": _money(old), **_vat_log(old_included, old_rate)},
+            "after": {"initial_amount": _money(data.initial_amount), **_vat_log(new_included, new_rate)},
         })
 
     async def add_ledger_item(self, task_id: int, data: LedgerItemCreate) -> CollectionLedgerItem:
@@ -393,12 +462,14 @@ class CollectionTaskService:
         sort_order = data.sort_order if data.sort_order is not None else await self.repo.next_sort_order(task.id)
         item = CollectionLedgerItem(
             task_id=task.id, subject=data.subject, amount=data.amount,
+            vat_included=data.vat_included, vat_rate=current_vat_rate(),
             sort_order=sort_order, created_by_user_id=self.user.id,
         )
         self.db.add(item)
         await self.db.flush()
         await self._log(task.id, CollectionEvent.LEDGER_ITEM_ADDED, {
-            "after": {"subject": item.subject, "amount": _money(item.amount), "sort_order": sort_order},
+            "after": {"subject": item.subject, "amount": _money(item.amount),
+                      **_vat_log(item.vat_included, item.vat_rate), "sort_order": sort_order},
             "item_id": item.id,
         })
         return item
@@ -416,15 +487,27 @@ class CollectionTaskService:
         await self._locked_details_for_money(task, CollectionType.LEDGER)
         item = await self._active_item(task, item_id)
         fields = data.model_fields_set
-        before = {"subject": item.subject, "amount": _money(item.amount), "sort_order": item.sort_order}
+        before = {"subject": item.subject, "amount": _money(item.amount), "vat_included": item.vat_included,
+                  "sort_order": item.sort_order}
         after = {
             "subject": data.subject if "subject" in fields else item.subject,
             "amount": _money(data.amount) if "amount" in fields else before["amount"],
+            "vat_included": data.vat_included if "vat_included" in fields else item.vat_included,
             "sort_order": data.sort_order if "sort_order" in fields else item.sort_order,
         }
         changed_before, changed_after = _changed(before, after)
         if not changed_after:
             return item
+        if "amount" in changed_after or "vat_included" in changed_after:
+            if after["vat_included"] is None:  # an item saved before VAT support: explicit choice
+                raise _vat_choice_required()
+            # The amount or its VAT choice changed: freeze the rate in force now. The
+            # history keeps the amount and VAT facts of both sides (its amount to pay).
+            new_rate = current_vat_rate()
+            changed_before.update(amount=before["amount"], **_vat_log(item.vat_included, item.vat_rate))
+            changed_after.update(amount=after["amount"], **_vat_log(after["vat_included"], new_rate))
+            item.vat_included = after["vat_included"]
+            item.vat_rate = new_rate
         if "subject" in changed_after:
             item.subject = data.subject
         if "amount" in changed_after:
@@ -447,7 +530,8 @@ class CollectionTaskService:
         item.archived_by_user_id = self.user.id
         await self.db.flush()
         await self._log(task.id, CollectionEvent.LEDGER_ITEM_ARCHIVED, {
-            "before": {"subject": item.subject, "amount": _money(item.amount)}, "item_id": item.id,
+            "before": {"subject": item.subject, "amount": _money(item.amount),
+                       **_vat_log(item.vat_included, item.vat_rate)}, "item_id": item.id,
         })
         await self.db.refresh(item)
         return item

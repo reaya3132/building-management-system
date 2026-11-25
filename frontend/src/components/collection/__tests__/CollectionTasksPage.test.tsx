@@ -16,6 +16,7 @@ const task = {
 
 vi.mock('../../../lib/collectionApi', () => ({
   CollectionAPI: {
+    vatRate: vi.fn(async () => '0.1800'),
     list: vi.fn(async () => ({ items: [task], total: 1, page: 1, page_size: 200 })),
     summary: vi.fn(async () => ({
       by_status: {

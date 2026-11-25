@@ -23,17 +23,20 @@ const ledger: CollectionTaskDetail = {
   total_amount: '250.00', is_archived: false, unread_messages_count: 0,
   created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z',
   description: null, initial_amount: null, adjustments: [], attachments: [], created_by_user_id: 5,
-  ledger_items: [{ id: 1, subject: 'ועד', amount: '250.00', sort_order: 0, created_by_user_id: 5, created_at: '', updated_at: '' }],
+  // An item saved before VAT support: no breakdown, paid as stored.
+  ledger_items: [{ id: 1, subject: 'ועד', amount: '250.00', sort_order: 0, created_by_user_id: 5, created_at: '', updated_at: '',
+    vat_included: null, vat_rate: null, net_amount: null, vat_amount: null, gross_amount: '250.00' }],
 }
 // What another screen saved meanwhile.
 const changedElsewhere: CollectionTaskDetail = {
   ...ledger, title: 'הוצאות ינואר (עודכן)', total_amount: '300.00',
-  ledger_items: [{ ...ledger.ledger_items[0], amount: '300.00' }],
+  ledger_items: [{ ...ledger.ledger_items[0], amount: '300.00', gross_amount: '300.00' }],
 }
 
 const api = vi.hoisted(() => ({ get: vi.fn(), update: vi.fn() }))
 vi.mock('../../../lib/collectionApi', () => ({
   CollectionAPI: {
+    vatRate: vi.fn(async () => '0.1800'),
     get: api.get,
     update: api.update,
     projectOptions: vi.fn(async () => [{ id: 2, name: 'כניסה 1', parent_name: 'בניין א' }]),

@@ -6,13 +6,14 @@ import { cn } from '../../lib/utils'
 import { CollectionAPI, type CollectionTaskDetail, type CollectionType } from '../../lib/collectionApi'
 import AssigneePicker from '../task-management/AssigneePicker'
 import SearchableSelect from '../task-management/SearchableSelect'
-import CollectionModal, { ErrorBanner, Field, PrimaryButton, SecondaryButton } from './CollectionModal'
+import CollectionModal, { AmountWithVat, ErrorBanner, Field, PrimaryButton, SecondaryButton, VatChoice, VatPreviewText } from './CollectionModal'
 import {
   COLLECTION_TYPE_LABELS,
   FIELD_CLASS,
+  agorotToAmount,
   collectionErrorMessage,
-  formatILS,
   parseMoneyInput,
+  vatBreakdown,
 } from './collectionUtils'
 import { useCollectionLookups } from './useCollectionLookups'
 
@@ -20,6 +21,8 @@ interface ItemDraft {
   key: number
   subject: string
   amount: string
+  /** Does the amount include VAT? Default: yes (the amount to pay is the amount entered). */
+  vatIncluded: boolean
 }
 
 interface CreateCollectionTaskModalProps {
@@ -31,7 +34,7 @@ interface CreateCollectionTaskModalProps {
 }
 
 let itemKey = 0
-const newItem = (): ItemDraft => ({ key: ++itemKey, subject: '', amount: '' })
+const newItem = (): ItemDraft => ({ key: ++itemKey, subject: '', amount: '', vatIncluded: true })
 
 /**
  * Validates the form against the backend rules and returns either an error
@@ -72,7 +75,10 @@ export default function CreateCollectionTaskModal({ isOpen, onClose, defaultMont
   const [month, setMonth] = useState(defaultMonth)
   const [assigneeIds, setAssigneeIds] = useState<number[]>([])
   const [initialAmount, setInitialAmount] = useState('')
+  const [initialVatIncluded, setInitialVatIncluded] = useState(true)
   const [items, setItems] = useState<ItemDraft[]>([newItem()])
+  // The current VAT rate, for previews only (the server freezes the rate on save).
+  const [vatRate, setVatRate] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -86,13 +92,26 @@ export default function CreateCollectionTaskModal({ isOpen, onClose, defaultMont
     setMonth(defaultMonth)
     setAssigneeIds(me?.id ? [me.id] : [])
     setInitialAmount('')
+    setInitialVatIncluded(true)
     setItems([newItem()])
     setError(null)
   }, [isOpen, defaultMonth, me?.id])
 
-  const ledgerTotal = useMemo(
-    () => items.reduce((sum, item) => sum + (Number(parseMoneyInput(item.amount) ?? 0)), 0),
-    [items]
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    CollectionAPI.vatRate().then((rate) => { if (!cancelled) setVatRate(rate) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [isOpen])
+
+  // Preview of the amount to pay: each item rounded on its own, in agorot.
+  const ledgerTotalAgorot = useMemo(
+    () => items.reduce((sum, item) => {
+      const value = parseMoneyInput(item.amount)
+      const preview = value ? vatBreakdown(value, item.vatIncluded, vatRate) : null
+      return sum + (preview?.grossAgorot ?? 0)
+    }, 0),
+    [items, vatRate]
   )
 
   // An empty last row is a placeholder, not an item.
@@ -114,8 +133,12 @@ export default function CreateCollectionTaskModal({ isOpen, onClose, defaultMont
         billing_month: month,
         assignee_ids: assigneeIds,
         ...(type === 'single'
-          ? { initial_amount: parseMoneyInput(initialAmount)! }
-          : { items: filledItems.map((i) => ({ subject: i.subject.trim(), amount: parseMoneyInput(i.amount)! })) }),
+          ? { initial_amount: parseMoneyInput(initialAmount)!, initial_vat_included: initialVatIncluded }
+          : {
+              items: filledItems.map((i) => ({
+                subject: i.subject.trim(), amount: parseMoneyInput(i.amount)!, vat_included: i.vatIncluded,
+              })),
+            }),
       })
       onCreated(created)
       onClose()
@@ -195,23 +218,31 @@ export default function CreateCollectionTaskModal({ isOpen, onClose, defaultMont
 
       {type === 'single' ? (
         <Field label="סכום (₪)" required>
-          <input
-            className={FIELD_CLASS}
-            inputMode="decimal"
-            dir="ltr"
-            value={initialAmount}
-            onChange={(e) => setInitialAmount(e.target.value)}
-            placeholder="0.00"
-          />
+          <div className="flex gap-2">
+            <input
+              className={cn(FIELD_CLASS, 'flex-1 min-w-0')}
+              inputMode="decimal"
+              dir="ltr"
+              value={initialAmount}
+              onChange={(e) => setInitialAmount(e.target.value)}
+              placeholder="0.00"
+            />
+            <VatChoice value={initialVatIncluded} onChange={setInitialVatIncluded} label="מע״מ הסכום" />
+          </div>
+          <span className="block mt-1">
+            <VatPreviewText amount={initialAmount} vatIncluded={initialVatIncluded} rate={vatRate} />
+          </span>
           <span className="block text-xs text-gray-500 dark:text-gray-400 mt-1">
-            הסכום ההתחלתי אינו ניתן לשינוי; בהמשך ניתן רק להוסיף תוספות.
+            הסכום ההתחלתי אינו ניתן לשינוי; בהמשך ניתן רק להוסיף תוספות (ללא מע״מ).
           </span>
         </Field>
       ) : (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">פריטים</span>
-            <span className="text-xs text-gray-500 dark:text-gray-400">סה״כ: {formatILS(ledgerTotal)}</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              סה״כ לתשלום: <AmountWithVat amount={agorotToAmount(ledgerTotalAgorot)} vatKnown inline />
+            </span>
           </div>
           {items.map((item, idx) => (
             <div key={item.key} className="flex gap-2">
@@ -231,6 +262,11 @@ export default function CreateCollectionTaskModal({ isOpen, onClose, defaultMont
                 onChange={(e) => setItems((prev) => prev.map((i) => (i.key === item.key ? { ...i, amount: e.target.value } : i)))}
                 placeholder="0.00"
                 aria-label={`סכום פריט ${idx + 1}`}
+              />
+              <VatChoice
+                value={item.vatIncluded}
+                onChange={(included) => setItems((prev) => prev.map((i) => (i.key === item.key ? { ...i, vatIncluded: included } : i)))}
+                label={`מע״מ פריט ${idx + 1}`}
               />
               <button
                 type="button"

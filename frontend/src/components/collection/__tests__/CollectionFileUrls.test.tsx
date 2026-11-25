@@ -41,6 +41,7 @@ const message = (id: number, attId: number, name: string, sig: string) => ({
 const collection = vi.hoisted(() => ({ get: vi.fn() }))
 vi.mock('../../../lib/collectionApi', () => ({
   CollectionAPI: {
+    vatRate: vi.fn(async () => '0.1800'),
     get: collection.get,
     projectOptions: vi.fn(async () => []),
     history: vi.fn(async () => ({ items: [], total: 0, page: 1, page_size: 30 })),

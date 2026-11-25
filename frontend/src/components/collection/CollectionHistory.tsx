@@ -6,7 +6,9 @@ import {
   collectionErrorMessage,
   formatDateTime,
   formatILS,
+  agorotToAmount,
   formatMonth,
+  vatBreakdown,
 } from './collectionUtils'
 
 const PAGE_SIZE = 30
@@ -23,6 +25,7 @@ export const COLLECTION_EVENT_LABELS: Record<string, string> = {
   archived: 'המשימה הועברה לארכיון',
   unarchived: 'המשימה שוחזרה מהארכיון',
   adjustment_added: 'שינוי בסכום',
+  adjustment_vat_changed: 'מע״מ של שינוי בסכום עודכן',
   initial_amount_changed: 'הסכום ההתחלתי שונה',
   ledger_item_added: 'נוסף פריט',
   ledger_item_updated: 'פריט עודכן',
@@ -43,6 +46,22 @@ const STATUS_TEXT: Record<string, string> = {
 
 type Snapshot = Record<string, unknown> | undefined
 
+/**
+ * An amount from a history snapshot as its amount to pay, with its VAT label and
+ * no breakdown: "₪236.00 כולל מע״מ". `choice` labels an adjustment by its choice
+ * ("כולל מע״מ" / "ללא מע״מ"); any other amount to pay is "כולל מע״מ". An entry
+ * written before VAT support (no VAT facts) shows the amount as stored, unlabelled.
+ */
+function payText(amount: unknown, snapshot: Snapshot, choice = false): string {
+  const included = snapshot?.vat_included
+  const rate = snapshot?.vat_rate
+  if (typeof included !== 'boolean' || typeof rate !== 'string') return formatILS(amount as string)
+  const preview = vatBreakdown(String(amount), included, rate)
+  if (!preview) return formatILS(amount as string)
+  const label = choice ? (included ? 'כולל מע״מ' : 'ללא מע״מ') : 'כולל מע״מ'
+  return `${formatILS(agorotToAmount(preview.grossAgorot))} ${label}`
+}
+
 /** A short, human description of what changed, from the entry's details. */
 export function describeCollectionEvent(entry: CollectionAuditEntry): string | null {
   const d = entry.details ?? {}
@@ -57,20 +76,28 @@ export function describeCollectionEvent(entry: CollectionAuditEntry): string | n
       return d.reason ? `${text} · ${d.reason}` : text
     }
     case 'adjustment_added': {
-      const amount = Number(after?.amount ?? 0)
-      const text = amount < 0 ? `הפחתה ${formatILS(-amount)}` : `תוספת ${formatILS(amount)}`
+      const amount = String(after?.amount ?? '0')
+      const negative = amount.trim().startsWith('-')
+      const text = `${negative ? 'הפחתה' : 'תוספת'} ${payText(negative ? amount.trim().slice(1) : amount, after, true)}`
       return after?.note ? `${text} · ${after.note}` : text
     }
+    case 'adjustment_vat_changed': {
+      const amount = String(after?.amount ?? before?.amount ?? '0')
+      return `${payText(amount, before, true)} ← ${payText(amount, after, true)}`
+    }
     case 'initial_amount_changed':
-      return `${formatILS(before?.initial_amount as string)} ← ${formatILS(after?.initial_amount as string)}`
+      return `${payText(before?.initial_amount, before)} ← ${payText(after?.initial_amount, after)}`
     case 'ledger_item_added':
-      return `${after?.subject ?? ''} · ${formatILS(after?.amount as string)}`
+      return `${after?.subject ?? ''} · ${payText(after?.amount, after)}`
     case 'ledger_item_archived':
-      return `${before?.subject ?? ''} · ${formatILS(before?.amount as string)}`
+      return `${before?.subject ?? ''} · ${payText(before?.amount, before)}`
     case 'ledger_item_updated': {
       const parts: string[] = []
       if (after && 'subject' in after) parts.push(`נושא: ${before?.subject} ← ${after.subject}`)
-      if (after && 'amount' in after) parts.push(`סכום: ${formatILS(before?.amount as string)} ← ${formatILS(after.amount as string)}`)
+      // A money change logs the amount and VAT facts of both sides (see the service).
+      if (after && ('amount' in after || 'vat_included' in after)) {
+        parts.push(`סכום: ${payText(before?.amount, before)} ← ${payText(after.amount, after)}`)
+      }
       return parts.join(' · ') || null
     }
     case 'attachment_added':
