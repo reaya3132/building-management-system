@@ -2,8 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Download, ExternalLink, FileText, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { CollectionAPI, type CollectionTaskDetail, type StatementLine } from '../../lib/collectionApi'
-import CollectionModal, { ErrorBanner, PrimaryButton, SecondaryButton } from './CollectionModal'
-import { FIELD_CLASS, collectionErrorMessage, formatILS, formatMonth, parseMoneyInput, toMonthKey } from './collectionUtils'
+import CollectionModal, { ErrorBanner, PrimaryButton, SecondaryButton, VatChoice, VatIncludedTag } from './CollectionModal'
+import {
+  FIELD_CLASS,
+  agorotToAmount,
+  collectionErrorMessage,
+  formatILS,
+  formatMonth,
+  parseMoneyInput,
+  toMonthKey,
+  vatBreakdown,
+} from './collectionUtils'
 
 const PREVIEW_DELAY_MS = 600
 
@@ -12,21 +21,32 @@ export interface DraftLine {
   include: boolean
   subject: string
   amount: string
+  /** The ledger item this line came from; null/absent for a line added here. */
+  itemId?: number | null
+  /** Includes VAT? null = an item saved before VAT support (no breakdown) unless chosen here. */
+  vatIncluded?: boolean | null
+  /** The item's frozen rate (null for a new line or an item without one). */
+  vatRate?: string | null
 }
 
 /** The document starts as the task's active ledger items, all included. */
 export function initialDraft(task: Pick<CollectionTaskDetail, 'ledger_items'>): DraftLine[] {
   return task.ledger_items
     .filter((item) => !item.archived_at)
-    .map((item) => ({ key: `item-${item.id}`, include: true, subject: item.subject, amount: item.amount }))
+    .map((item) => ({
+      key: `item-${item.id}`, include: true, subject: item.subject, amount: item.amount,
+      itemId: item.id, vatIncluded: item.vat_included ?? null, vatRate: item.vat_rate ?? null,
+    }))
 }
 
 /**
- * The lines to render (included rows only) and their total in agorot, or an
- * error message when an included row is invalid. Integer agorot avoid float
- * drift; the server recomputes the same total with decimals.
+ * The lines to render (included rows only) and their total to pay in agorot, or
+ * an error message when an included row is invalid. Integer agorot, each line
+ * rounded on its own — the same rule the server applies (it recomputes the total
+ * and never takes a rate from here). `currentRate` previews lines that have no
+ * frozen rate (new lines, or an old item given a VAT choice here).
  */
-export function statementFromDraft(draft: DraftLine[]):
+export function statementFromDraft(draft: DraftLine[], currentRate: string | null = null):
   { lines: StatementLine[]; totalAgorot: number; error: null } | { lines: null; totalAgorot: null; error: string } {
   const lines: StatementLine[] = []
   let totalAgorot = 0
@@ -35,8 +55,16 @@ export function statementFromDraft(draft: DraftLine[]):
     const amount = parseMoneyInput(row.amount)
     if (!row.subject.trim()) return { lines: null, totalAgorot: null, error: 'לכל שורה במסמך יש להזין נושא' }
     if (!amount) return { lines: null, totalAgorot: null, error: `סכום לא תקין בשורה "${row.subject.trim()}"` }
-    lines.push({ subject: row.subject.trim(), amount })
-    totalAgorot += Math.round(Number(amount) * 100)
+    const isNew = row.itemId == null
+    const included = row.vatIncluded ?? (isNew ? true : null)
+    lines.push({
+      subject: row.subject.trim(),
+      amount,
+      ...(isNew ? {} : { item_id: row.itemId }),
+      ...(included === null ? {} : { vat_included: included }),
+    })
+    const preview = vatBreakdown(amount, included, included === null ? null : (row.vatRate ?? currentRate))
+    totalAgorot += preview?.grossAgorot ?? Math.round(Number(amount) * 100)
   }
   return { lines, totalAgorot, error: null }
 }
@@ -63,8 +91,17 @@ export default function StatementExportModal({ task, isOpen, onClose }: Statemen
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const urlRef = useRef<string | null>(null)
+  // The current VAT rate, for the total preview of new lines only.
+  const [vatRate, setVatRate] = useState<string | null>(null)
 
-  const statement = useMemo(() => statementFromDraft(draft), [draft])
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    CollectionAPI.vatRate().then((rate) => { if (!cancelled) setVatRate(rate) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [isOpen])
+
+  const statement = useMemo(() => statementFromDraft(draft, vatRate), [draft, vatRate])
   const linesKey = statement.lines ? JSON.stringify(statement.lines) : null
 
   const replacePreview = (url: string | null) => {
@@ -191,6 +228,11 @@ export default function StatementExportModal({ task, isOpen, onClose }: Statemen
                   placeholder="0.00"
                   aria-label={`סכום שורה ${idx + 1}`}
                 />
+                <VatChoice
+                  value={row.vatIncluded ?? (row.itemId == null ? true : null)}
+                  onChange={(included) => update(row.key, { vatIncluded: included })}
+                  label={`מע״מ שורה ${idx + 1}`}
+                />
                 <button
                   type="button"
                   onClick={() => setDraft((rows) => rows.filter((r) => r.key !== row.key))}
@@ -212,9 +254,13 @@ export default function StatementExportModal({ task, isOpen, onClose }: Statemen
           </button>
 
           <div className="flex items-center justify-between rounded-2xl bg-gradient-to-l from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/20 border border-emerald-100 dark:border-emerald-900/40 px-4 py-3">
-            <span className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">סה״כ במסמך</span>
-            <span className="text-xl font-bold text-emerald-700 dark:text-emerald-300 tabular-nums" data-testid="statement-total">
-              {statement.totalAgorot != null ? formatILS(statement.totalAgorot / 100) : '—'}
+            <span className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">סה״כ לתשלום במסמך</span>
+            <span className="inline-flex items-baseline gap-1.5 whitespace-nowrap">
+              <bdi dir="ltr" className="text-xl font-bold text-emerald-700 dark:text-emerald-300 tabular-nums" data-testid="statement-total">
+                {statement.totalAgorot != null ? formatILS(agorotToAmount(statement.totalAgorot)) : '—'}
+              </bdi>
+              {/* Only when every included line's VAT is known (an old item without a choice is not). */}
+              {statement.totalAgorot != null && draft.every((r) => !r.include || r.itemId == null || r.vatIncluded != null) && <VatIncludedTag />}
             </span>
           </div>
         </section>

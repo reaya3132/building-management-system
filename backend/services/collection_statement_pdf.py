@@ -1,7 +1,9 @@
 """PDF statement for a ledger (כרטסת) collection task.
 
 Holds exactly: the billing month and year, the project, a table of the
-document's items and their total. Pure rendering — no database access; the
+document's items (each line's amount to pay, VAT included) and their total, marked
+"כולל מע״מ" when the VAT of every line is known. No before-VAT / VAT breakdown is
+printed. The caller computes all amounts (services/vat.py). Pure rendering — no database access; the
 caller decides which items go in (see the statement endpoint).
 """
 from __future__ import annotations
@@ -40,7 +42,11 @@ def format_ils(amount: Decimal) -> str:
     return f"₪{amount:,.2f}"
 
 
-def render_statement_pdf(*, billing_month: date, project: str, lines: list[StatementLine], total: Decimal) -> bytes:
+def render_statement_pdf(*, billing_month: date, project: str, lines: list[StatementLine], total: Decimal,
+                         net_total: Decimal | None = None, vat_total: Decimal | None = None) -> bytes:
+    """``lines[].amount`` and ``total`` are amounts to pay. ``net_total``/``vat_total``
+    are given only when every line's VAT is known; they are not printed, they only
+    mark the total as "כולל מע״מ"."""
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
     from reportlab.lib.pagesizes import A4
@@ -80,11 +86,13 @@ def render_statement_pdf(*, billing_month: date, project: str, lines: list[State
 
     # Item table. reportlab lays columns out left to right, so the visual
     # right-to-left order is amount | subject | #.
-    rows = [[Paragraph(rtl("סכום"), head_number), Paragraph(rtl("נושא"), head), Paragraph("#", index)]]
+    rows = [[Paragraph(rtl("סכום לתשלום"), head_number), Paragraph(rtl("נושא"), head), Paragraph("#", index)]]
     for i, line in enumerate(lines, start=1):
         rows.append([Paragraph(format_ils(line.amount), number), Paragraph(rtl(line.subject), cell),
                      Paragraph(str(i), index)])
-    rows.append([Paragraph(format_ils(total), head_number), Paragraph(rtl('סה"כ'), head), ""])
+    vat_known = net_total is not None and vat_total is not None and bool(lines)
+    rows.append([Paragraph(format_ils(total), head_number),
+                 Paragraph(rtl('סה"כ לתשלום (כולל מע"מ)' if vat_known else 'סה"כ'), head), ""])
 
     table = Table(rows, colWidths=[width * 0.25, width * 0.65, width * 0.10], repeatRows=1)
     table.setStyle(TableStyle([

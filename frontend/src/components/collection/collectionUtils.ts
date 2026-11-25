@@ -101,6 +101,77 @@ export function totalStaysNonNegative(currentTotal: string, deltaAgorot: number)
   return toAgorot(currentTotal) + deltaAgorot >= 0
 }
 
+// ── VAT (מע״מ) ───────────────────────────────────────────────────────────────
+//
+// Preview mirror of backend/services/vat.py — the server computes every saved
+// amount; this only previews a form before it is sent. Same exact rule: agorot ×
+// rate in ten-thousandths, BigInt, round half up, per amount:
+//   VAT excluded: vat = round(amount × rate);           to pay = amount + vat
+//   VAT included: vat = round(amount × rate / (1+rate)); to pay = amount
+
+/** "1234.5" → 123450n (exact; no float). Null when not a plain non-negative decimal. */
+function decimalToUnits(value: string, scale: number): bigint | null {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(value.trim())
+  if (!match) return null
+  const fraction = match[2] ?? ''
+  if (fraction.length > scale && /[^0]/.test(fraction.slice(scale))) return null
+  return BigInt(match[1] + fraction.slice(0, scale).padEnd(scale, '0'))
+}
+
+function divRoundHalfUp(numerator: bigint, denominator: bigint): bigint {
+  return (2n * numerator + denominator) / (2n * denominator)
+}
+
+export interface VatPreview {
+  /** Agorot; null when the VAT facts are unknown (an amount saved before VAT support). */
+  netAgorot: number | null
+  vatAgorot: number | null
+  /** Agorot to pay. */
+  grossAgorot: number
+}
+
+/**
+ * Before VAT / VAT / to pay of one amount ("1000.00", or "-100.00" for a
+ * reduction), given whether it includes VAT and the rate ("0.1800"). A negative
+ * amount mirrors the positive one (the rule on |amount|, the sign put back).
+ * Null when the amount or rate is not valid.
+ */
+export function vatBreakdown(amount: string, vatIncluded: boolean | null, rate: string | null): VatPreview | null {
+  const text = amount.trim()
+  const sign = text.startsWith('-') ? -1 : 1
+  const agorot = decimalToUnits(sign < 0 ? text.slice(1) : text, 2)
+  if (agorot === null) return null
+  if (vatIncluded === null || rate === null) return { netAgorot: null, vatAgorot: null, grossAgorot: sign * Number(agorot) }
+  const units = decimalToUnits(rate, 4)
+  if (units === null || units >= 10000n) return null
+  const [net, vat, gross] = vatIncluded
+    ? (() => { const v = divRoundHalfUp(agorot * units, 10000n + units); return [agorot - v, v, agorot] })()
+    : (() => { const v = divRoundHalfUp(agorot * units, 10000n); return [agorot, v, agorot + v] })()
+  return { netAgorot: sign * Number(net), vatAgorot: sign * Number(vat), grossAgorot: sign * Number(gross) }
+}
+
+/** Integer agorot → a server-style decimal string ("1180.00"). */
+export function agorotToAmount(agorot: number): string {
+  const sign = agorot < 0 ? '-' : ''
+  const abs = Math.abs(agorot)
+  return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`
+}
+
+/** "0.1800" → "18%", "0.1750" → "17.5%". */
+export function formatVatRate(rate: string | null | undefined): string {
+  if (rate == null) return ''
+  const units = decimalToUnits(rate, 4)
+  if (units === null) return ''
+  const percent = Number(units) / 100
+  return `${Number.isInteger(percent) ? percent : percent.toFixed(2).replace(/0+$/, '')}%`
+}
+
+/** Short label of an amount's VAT choice; empty for an amount saved before VAT support. */
+export function vatChoiceLabel(vatIncluded: boolean | null | undefined): string {
+  if (vatIncluded == null) return ''
+  return vatIncluded ? 'כולל מע״מ' : '+ מע״מ'
+}
+
 // ── billing months (YYYY-MM) ──────────────────────────────────────────────────
 
 export function currentMonth(today: Date = new Date()): string {

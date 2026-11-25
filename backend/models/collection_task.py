@@ -5,14 +5,16 @@ title, description, status, assignees, chat and files stay on the shared task
 tables. Only the collection-specific data lives here:
 
 - ``CollectionTaskDetails``  1:1 with the task: type, project, billing month and,
-  for ``single``, the (positive, editable) initial amount.
-- ``CollectionAmountAdjustment``  append-only additions (> 0) and reductions (< 0),
-  ``single`` only. The service keeps the task total >= 0.
+  for ``single``, the (positive, editable) initial amount with its VAT facts.
+- ``CollectionAmountAdjustment``  additions (> 0) and reductions (< 0), ``single``
+  only, each with its own VAT choice. The service keeps the task total >= 0.
 - ``CollectionLedgerItem``  subject + amount lines (``ledger`` only), archived
   instead of deleted.
 
-The total is never stored: ``single`` = initial_amount + SUM(adjustments),
-``ledger`` = SUM(active ledger items). Every FK to ``tasks`` is RESTRICT so a
+The total (the amount to pay) is never stored: ``single`` = the initial amount to
+pay + SUM(adjustments), ``ledger`` = SUM(each active item's amount to pay), where
+"to pay" adds VAT to an amount entered without it (services/vat.py), adjustments
+included. Every FK to ``tasks`` is RESTRICT so a
 task holding financial data can never be hard-deleted; change history lives in
 ``audit_logs`` (entity='collection_task').
 """
@@ -22,6 +24,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -38,6 +41,8 @@ from backend.models.ledger_item import LedgerItem
 
 # ILS, two decimal places, up to 9,999,999,999.99.
 MONEY = Numeric(12, 2)
+# A VAT rate as a fraction, e.g. 0.1800.
+VAT_RATE = Numeric(5, 4)
 
 
 def _utcnow() -> datetime:
@@ -67,6 +72,7 @@ class CollectionEvent:
     ARCHIVED = "archived"
     UNARCHIVED = "unarchived"
     ADJUSTMENT_ADDED = "adjustment_added"
+    ADJUSTMENT_VAT_CHANGED = "adjustment_vat_changed"
     INITIAL_AMOUNT_CHANGED = "initial_amount_changed"
     LEDGER_ITEM_ADDED = "ledger_item_added"
     LEDGER_ITEM_UPDATED = "ledger_item_updated"
@@ -94,6 +100,18 @@ class CollectionTaskDetails(Base):
         CheckConstraint(
             "EXTRACT(DAY FROM billing_month) = 1", name="ck_ctd_month_first_day"
         ).ddl_if(dialect="postgresql"),
+        # VAT of the initial amount (single only): both set or both NULL (an amount
+        # saved before VAT support); a ledger task has none.
+        CheckConstraint(
+            "(initial_vat_included IS NULL AND initial_vat_rate IS NULL)"
+            f" OR (collection_type = '{CollectionType.SINGLE}'"
+            " AND initial_vat_included IS NOT NULL AND initial_vat_rate IS NOT NULL)",
+            name="ck_ctd_initial_vat",
+        ),
+        CheckConstraint(
+            "initial_vat_rate IS NULL OR (initial_vat_rate >= 0 AND initial_vat_rate < 1)",
+            name="ck_ctd_initial_vat_rate",
+        ),
         Index("ix_ctd_billing_month_project_id", "billing_month", "project_id"),
         Index("ix_ctd_billing_month", "billing_month"),
         Index("ix_ctd_project_id", "project_id"),
@@ -109,6 +127,11 @@ class CollectionTaskDetails(Base):
     # Always the first day of the billing month; independent of created/updated_at.
     billing_month: Mapped[date] = mapped_column(Date, nullable=False)
     initial_amount: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
+    # Does initial_amount include VAT, and the rate in force when it was set
+    # (frozen; see services/vat.py). NULL/NULL = saved before VAT support.
+    # Adjustments never carry VAT.
+    initial_vat_included: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    initial_vat_rate: Mapped[Decimal | None] = mapped_column(VAT_RATE, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
@@ -120,10 +143,17 @@ class CollectionTaskDetails(Base):
 
 class CollectionAmountAdjustment(Base):
     """An addition (> 0) or reduction (< 0) to a ``single`` collection task.
-    Append-only; the service rejects one that would make the total negative."""
+    Its amount and note are never changed; only its VAT choice may be. The service
+    rejects any change that would make the total negative."""
     __tablename__ = "collection_amount_adjustments"
     __table_args__ = (
         CheckConstraint("amount <> 0", name="ck_caa_amount_nonzero"),
+        # VAT: both set or both NULL (an adjustment saved before VAT support).
+        CheckConstraint(
+            "(vat_included IS NULL AND vat_rate IS NULL) OR (vat_included IS NOT NULL AND vat_rate IS NOT NULL)",
+            name="ck_caa_vat",
+        ),
+        CheckConstraint("vat_rate IS NULL OR (vat_rate >= 0 AND vat_rate < 1)", name="ck_caa_vat_rate"),
         Index("ix_caa_task_id", "task_id"),
     )
 
@@ -132,6 +162,11 @@ class CollectionAmountAdjustment(Base):
         ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False
     )
     amount: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    # Does ``amount`` include VAT, and the rate in force when that was set (frozen;
+    # see services/vat.py). NULL/NULL = saved before VAT support. Mirrored in
+    # backend/migrations/collection_adjustments_vat.sql.
+    vat_included: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    vat_rate: Mapped[Decimal | None] = mapped_column(VAT_RATE, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False

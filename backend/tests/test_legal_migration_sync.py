@@ -28,6 +28,11 @@ CONTACTS_SQL = (MIGRATIONS / "add_contacts.sql").read_text(encoding="utf-8")
 UPGRADE_SQL = (MIGRATIONS / "upgrade_ledger_items_and_legal_fields.sql").read_text(encoding="utf-8")
 ROLLBACK_SQL = (MIGRATIONS / "rollback_ledger_items_and_legal_fields.sql").read_text(encoding="utf-8")
 COLLECTION_SQL = (MIGRATIONS / "add_collection_tasks.sql").read_text(encoding="utf-8")
+VAT_SQL = (MIGRATIONS / "collection_vat.sql").read_text(encoding="utf-8")
+VAT_ROLLBACK_SQL = (MIGRATIONS / "rollback_collection_vat.sql").read_text(encoding="utf-8")
+ADJ_VAT_SQL = (MIGRATIONS / "collection_adjustments_vat.sql").read_text(encoding="utf-8")
+ADJ_VAT_ROLLBACK_SQL = (MIGRATIONS / "rollback_collection_adjustments_vat.sql").read_text(encoding="utf-8")
+VAT_CHECKS = {"ck_li_vat", "ck_li_vat_rate"}  # added by collection_vat.sql
 MODELS = (Contact, LegalProceeding, LegalProceedingStage, LegalProceedingEntry, LegalProceedingAssignee)
 
 
@@ -142,6 +147,8 @@ def test_ledger_upgrade_matches_the_model():
     checks = {c.name: _norm(str(c.sqltext)) for c in LedgerItem.__table__.constraints if isinstance(c, CheckConstraint)}
     upgrade = _norm(UPGRADE_SQL)
     for name, expr in checks.items():
+        if name in VAT_CHECKS:
+            continue  # test_collection_vat_migration_matches_the_models
         if name != "ck_cli_amount_positive":  # exists since add_collection_tasks.sql
             assert f"add constraint {name} check ( {expr})" in upgrade, name
             assert f"drop constraint {name}" in _norm(ROLLBACK_SQL), name
@@ -149,6 +156,30 @@ def test_ledger_upgrade_matches_the_model():
     for index in LedgerItem.__table__.indexes:
         assert index.name in UPGRADE_SQL or index.name in COLLECTION_SQL, index.name
     assert "uq_li" not in UPGRADE_SQL  # any number of base amounts per proceeding
+
+
+def test_collection_vat_migration_matches_the_models():
+    from backend.models.collection_task import CollectionAmountAdjustment, CollectionTaskDetails
+
+    for model, names, columns, vat, rollback in (
+        (LedgerItem, VAT_CHECKS, ("vat_included", "vat_rate"), _norm(VAT_SQL), _norm(VAT_ROLLBACK_SQL)),
+        (CollectionTaskDetails, {"ck_ctd_initial_vat", "ck_ctd_initial_vat_rate"},
+         ("initial_vat_included", "initial_vat_rate"), _norm(VAT_SQL), _norm(VAT_ROLLBACK_SQL)),
+        # A separate, later file: collection_vat.sql was already applied as it is.
+        (CollectionAmountAdjustment, {"ck_caa_vat", "ck_caa_vat_rate"}, ("vat_included", "vat_rate"),
+         _norm(ADJ_VAT_SQL), _norm(ADJ_VAT_ROLLBACK_SQL)),
+    ):
+        checks = {c.name: _norm(str(c.sqltext)) for c in model.__table__.constraints
+                  if isinstance(c, CheckConstraint) and c.name in names}
+        assert set(checks) == names
+        for name, expr in checks.items():
+            assert f"add constraint {name} check ({expr})" in vat, name
+            assert f"drop constraint if exists {name}" in rollback, name
+        for column in columns:
+            col = model.__table__.c[column]
+            assert col.nullable and col.default is None and col.server_default is None, column
+            assert f"add column if not exists {column}" in vat, column
+            assert f"drop column if exists {column}" in rollback, column
 
 
 def test_collection_migration_cannot_recreate_the_renamed_table():

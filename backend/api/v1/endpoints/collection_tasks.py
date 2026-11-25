@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from decimal import Decimal
 from typing import Literal
 from urllib.parse import quote
 
@@ -46,6 +45,7 @@ from backend.repositories.user_repository import UserRepository
 from backend.schemas.collection_task import (
     AdjustmentCreate,
     AdjustmentOut,
+    AdjustmentVatUpdate,
     AdjustmentResult,
     AuditEntryOut,
     AuditPage,
@@ -73,6 +73,8 @@ from backend.schemas.collection_task import (
     StatusIn,
     StatusSummary,
     UserBrief,
+    VatFields,
+    VatRateOut,
 )
 from backend.schemas.notification import NotificationOut
 from backend.schemas.task import TaskAttachmentOut
@@ -86,6 +88,7 @@ from backend.services.collection_task_service import (
 )
 from backend.services.collection_statement_pdf import StatementLine, render_statement_pdf
 from backend.services.file_url_resolver import resolve_stored_file_url
+from backend.services.vat import VatBreakdown, current_vat_rate, sum_breakdowns, vat_breakdown
 from backend.api.v1.endpoints.notifications import _to_out as _notification_to_out
 
 router = APIRouter()
@@ -135,12 +138,31 @@ def _list_item(task, details, project, parent_name, total, unread: int) -> Colle
 
 def _adjustment_out(adj: CollectionAmountAdjustment) -> AdjustmentOut:
     author = adj.created_by_user
+    vat, _ = _vat_fields(adj.amount, adj.vat_included, adj.vat_rate)
     return AdjustmentOut(id=adj.id, amount=adj.amount, note=adj.note,
-                         created_by=_user_brief(author) if author else None, created_at=adj.created_at)
+                         created_by=_user_brief(author) if author else None, created_at=adj.created_at,
+                         **vat.model_dump())
+
+
+def _vat_fields(amount, vat_included, vat_rate) -> tuple[VatFields, VatBreakdown]:
+    b = vat_breakdown(amount, vat_included, vat_rate)
+    return VatFields(vat_included=vat_included, vat_rate=vat_rate, net_amount=b.net, vat_amount=b.vat,
+                     gross_amount=b.gross), b
+
+
+def _initial_vat(details) -> VatFields:
+    return _vat_fields(details.initial_amount, details.initial_vat_included, details.initial_vat_rate)[0]
 
 
 def _item_out(item: CollectionLedgerItem) -> LedgerItemOut:
-    return LedgerItemOut.model_validate(item, from_attributes=True)
+    vat, _ = _vat_fields(item.amount, item.vat_included, item.vat_rate)
+    return LedgerItemOut(
+        id=item.id, subject=item.subject, amount=item.amount, sort_order=item.sort_order,
+        created_by_user_id=item.created_by_user_id, updated_by_user_id=item.updated_by_user_id,
+        created_at=item.created_at, updated_at=item.updated_at,
+        archived_at=item.archived_at, archived_by_user_id=item.archived_by_user_id,
+        **vat.model_dump(),
+    )
 
 
 async def _detail(db, user, task_id: int) -> CollectionTaskDetail:
@@ -150,12 +172,20 @@ async def _detail(db, user, task_id: int) -> CollectionTaskDetail:
     project, parent_name = await repo.get_project_brief(details.project_id)
     unread = (await _unread_message_counts(db, user.id, [task_id])).get(task_id, 0)
     base = _list_item(task, details, project, parent_name, await repo.total_for(task_id), unread)
+    items = await repo.list_ledger_items(task_id)
+    single = details.collection_type == CollectionType.SINGLE
+    # Ledger: VAT totals of the active items (None when any has no known VAT).
+    ledger_vat = None if single else sum_breakdowns(
+        [vat_breakdown(i.amount, i.vat_included, i.vat_rate) for i in items if i.archived_at is None])
     return CollectionTaskDetail(
         **base.model_dump(),
         description=task.description,
         initial_amount=details.initial_amount,
+        initial_vat=_initial_vat(details) if single and details.initial_amount is not None else None,
+        total_net_amount=ledger_vat.net if ledger_vat else None,
+        total_vat_amount=ledger_vat.vat if ledger_vat else None,
         adjustments=[_adjustment_out(a) for a in await repo.list_adjustments(task_id)],
-        ledger_items=[_item_out(i) for i in await repo.list_ledger_items(task_id)],
+        ledger_items=[_item_out(i) for i in items],
         attachments=[
             TaskAttachmentOut(id=a.id, file_name=a.file_name or "", file_url=resolve_stored_file_url(a.file_path))
             for a in (task.attachments or [])
@@ -289,6 +319,13 @@ async def collection_notifications_unread_count(db: DBSessionDep, user=Depends(r
     return {"count": await NotificationRepository(db).count_unread(user.id, task_kind=TaskKind.COLLECTION)}
 
 
+@router.get("/vat-rate", response_model=VatRateOut)
+async def get_vat_rate(user=Depends(get_current_user)):
+    """The VAT rate in force now (VAT_RATE), for form previews only — the server
+    freezes the rate itself whenever an amount is saved."""
+    return VatRateOut(vat_rate=current_vat_rate())
+
+
 @router.get("/project-options", response_model=list[ProjectOption])
 async def collection_project_options(db: DBSessionDep, user=Depends(require_permission("read", COLLECTION, project_id_param=None))):
     """Projects for the picker: parents and sub-projects (via relation_project).
@@ -365,12 +402,34 @@ async def export_collection_statement(task_id: int, data: StatementRequest, db: 
     if details.collection_type != CollectionType.LEDGER:
         raise collection_error(409, "wrong_collection_type", "A statement is available for ledger tasks only")
     project, parent_name = await repo.get_project_brief(details.project_id)
-    lines = [StatementLine(subject=i.subject, amount=i.amount) for i in data.items]
+    # VAT per line, never trusting a rate from the client: a line taken from a ledger
+    # item uses that item's frozen rate (the current rate only if the item has none
+    # yet); a line added in the export window uses the current rate.
+    items = {i.id: i for i in await repo.list_ledger_items(task_id)}
+    rate_now = current_vat_rate()
+    breakdowns = []
+    for line in data.items:
+        if line.item_id is None:
+            included = True if line.vat_included is None else line.vat_included
+            rate = rate_now
+        else:
+            item = items.get(line.item_id)
+            if item is None or item.archived_at is not None:
+                raise collection_error(422, "statement_item_not_found",
+                                       "A statement line refers to a ledger item that is not active in this task",
+                                       item_id=line.item_id)
+            included = item.vat_included if line.vat_included is None else line.vat_included
+            rate = (item.vat_rate if item.vat_rate is not None else rate_now) if included is not None else None
+        breakdowns.append(vat_breakdown(line.amount, included, rate))
+    lines = [StatementLine(subject=line.subject, amount=b.gross) for line, b in zip(data.items, breakdowns)]
+    totals = sum_breakdowns(breakdowns)
     content = render_statement_pdf(
         billing_month=details.billing_month,
         project=f"{parent_name} › {project.name}" if parent_name else project.name,
         lines=lines,
-        total=sum((line.amount for line in lines), Decimal("0.00")),
+        total=totals.gross,
+        net_total=totals.net,
+        vat_total=totals.vat,
     )
     filename = quote(f"statement_{task_id}_{details.billing_month:%Y-%m}.pdf")
     return Response(content=content, media_type="application/pdf",
@@ -425,13 +484,23 @@ async def add_collection_adjustment(task_id: int, data: AdjustmentCreate, db: DB
     return AdjustmentResult(adjustment=_adjustment_out(adjustment), total_amount=total)
 
 
+@router.patch("/{task_id}/adjustments/{adjustment_id}", response_model=AdjustmentResult)
+async def update_collection_adjustment_vat(task_id: int, adjustment_id: int, data: AdjustmentVatUpdate,
+                                           db: DBSessionDep, user=Depends(get_current_user)):
+    """Only the VAT choice of an adjustment can change (never its amount or note)."""
+    adjustment = await CollectionTaskService(db, user).update_adjustment_vat(task_id, adjustment_id, data)
+    total = await CollectionTaskRepository(db).total_for(task_id)
+    return AdjustmentResult(adjustment=_adjustment_out(adjustment), total_amount=total)
+
+
 @router.patch("/{task_id}/initial-amount", response_model=InitialAmountResult)
 async def update_collection_initial_amount(task_id: int, data: InitialAmountUpdate, db: DBSessionDep,
                                            user=Depends(get_current_user)):
     await CollectionTaskService(db, user).update_initial_amount(task_id, data)
     repo = CollectionTaskRepository(db)
     details = await repo.get_details(task_id)
-    return InitialAmountResult(initial_amount=details.initial_amount, total_amount=await repo.total_for(task_id))
+    return InitialAmountResult(initial_amount=details.initial_amount, initial_vat=_initial_vat(details),
+                               total_amount=await repo.total_for(task_id))
 
 
 @router.post("/{task_id}/ledger-items", response_model=LedgerItemResult, status_code=201)

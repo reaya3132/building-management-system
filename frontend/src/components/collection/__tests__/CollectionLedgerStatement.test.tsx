@@ -7,6 +7,9 @@ import authReducer from '../../../store/slices/authSlice'
 import permissionsReducer from '../../../store/slices/permissionsSlice'
 import type { CollectionTaskDetail } from '../../../lib/collectionApi'
 
+// Items saved before VAT support: no breakdown, paid as stored (gross_amount = amount).
+const LEGACY_VAT = { vat_included: null, vat_rate: null, net_amount: null, vat_amount: null }
+
 const baseTask: CollectionTaskDetail = {
   id: 7, title: 'הוצאות ינואר', status: 'open', collection_type: 'ledger', billing_month: '2026-10-01',
   project: { id: 2, name: 'כניסה 1', parent_name: 'בניין א' }, assignees: [{ id: 5, full_name: 'בודק' }],
@@ -14,9 +17,9 @@ const baseTask: CollectionTaskDetail = {
   created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z',
   description: null, initial_amount: null, adjustments: [], attachments: [], created_by_user_id: 5,
   ledger_items: [
-    { id: 1, subject: 'ועד', amount: '250.00', sort_order: 0, created_by_user_id: 5, created_at: '', updated_at: '' },
-    { id: 2, subject: 'חניה', amount: '80.50', sort_order: 1, created_by_user_id: 5, created_at: '', updated_at: '' },
-    { id: 3, subject: 'בארכיון', amount: '99.00', sort_order: 2, created_by_user_id: 5, created_at: '', updated_at: '', archived_at: '2026-10-02T00:00:00Z' },
+    { id: 1, subject: 'ועד', amount: '250.00', sort_order: 0, created_by_user_id: 5, created_at: '', updated_at: '', ...LEGACY_VAT, gross_amount: '250.00' },
+    { id: 2, subject: 'חניה', amount: '80.50', sort_order: 1, created_by_user_id: 5, created_at: '', updated_at: '', ...LEGACY_VAT, gross_amount: '80.50' },
+    { id: 3, subject: 'בארכיון', amount: '99.00', sort_order: 2, created_by_user_id: 5, created_at: '', updated_at: '', archived_at: '2026-10-02T00:00:00Z', ...LEGACY_VAT, gross_amount: '99.00' },
   ],
 }
 
@@ -31,6 +34,7 @@ const api = vi.hoisted(() => ({
 
 vi.mock('../../../lib/collectionApi', () => ({
   CollectionAPI: {
+    vatRate: vi.fn(async () => '0.1800'),
     get: api.get,
     statementPdf: api.statementPdf,
     update: api.update,
@@ -125,7 +129,8 @@ describe('statement draft', () => {
       { key: 'c', include: true, subject: 'חדש', amount: '0.20' },
     ]
     expect(statementFromDraft(draft)).toEqual({
-      lines: [{ subject: 'ועד', amount: '250.10' }, { subject: 'חדש', amount: '0.20' }], totalAgorot: 25030, error: null,
+      // Rows without an item are new lines: VAT included unless chosen otherwise.
+      lines: [{ subject: 'ועד', amount: '250.10', vat_included: true }, { subject: 'חדש', amount: '0.20', vat_included: true }], totalAgorot: 25030, error: null,
     })
     expect(statementFromDraft([{ key: 'x', include: true, subject: 'x', amount: '1.234' }]).error).toMatch(/סכום/)
     expect(statementFromDraft([{ key: 'x', include: false, subject: '', amount: '' }]).lines).toEqual([])
@@ -154,7 +159,8 @@ describe('export window', () => {
     await user.type(within(editor).getByRole('textbox', { name: 'סכום שורה 3' }), '19.99')
 
     expect(screen.getByTestId('statement-total')).toHaveTextContent('319.99')
-    const expected = [{ subject: 'ועד', amount: '300' }, { subject: 'קנס', amount: '19.99' }]
+    // The item line points at its item (its frozen VAT is the server's); the new line is VAT included.
+    const expected = [{ subject: 'ועד', amount: '300', item_id: 1 }, { subject: 'קנס', amount: '19.99', vat_included: true }]
     await waitFor(() => expect(api.statementPdf).toHaveBeenLastCalledWith(7, expected), { timeout: 3000 })
     expect(await screen.findByTitle('תצוגה מקדימה של ה־PDF')).toHaveAttribute('src', 'blob:preview')
 

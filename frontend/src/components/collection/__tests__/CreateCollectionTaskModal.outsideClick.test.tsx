@@ -8,6 +8,7 @@ import { Wallet } from 'lucide-react'
 
 vi.mock('../../../lib/collectionApi', () => ({
   CollectionAPI: {
+    vatRate: vi.fn(async () => '0.1800'),
     projectOptions: vi.fn(async () => []),
     create: vi.fn(),
   },

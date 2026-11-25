@@ -5,6 +5,7 @@ Uses in-memory SQLite so no real PostgreSQL connection is needed.
 import os
 
 os.environ.setdefault("ENVIRONMENT", "test")  # before any backend import: no external alerts
+os.environ.setdefault("VAT_RATE", "0.18")  # required by the settings; the tests pin their own rate where it matters
 
 import pytest
 import pytest_asyncio
