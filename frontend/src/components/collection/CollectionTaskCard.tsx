@@ -2,7 +2,7 @@ import { Archive, Users } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import type { CollectionTaskListItem } from '../../lib/collectionApi'
 import UnreadMessagesDot from '../task-management/UnreadMessagesDot'
-import { COLLECTION_STATUS_CHIP, COLLECTION_STATUS_LABELS, COLLECTION_TYPE_LABELS, displayCollectionTitle, formatILS } from './collectionUtils'
+import { COLLECTION_STATUS_CHIP, COLLECTION_STATUS_LABELS, COLLECTION_STATUS_STRIPE, COLLECTION_TYPE_LABELS, displayCollectionTitle, formatILS } from './collectionUtils'
 
 export function projectLabel(task: Pick<CollectionTaskListItem, 'project'>): string {
   return task.project.parent_name ? `${task.project.parent_name} › ${task.project.name}` : task.project.name
@@ -31,8 +31,9 @@ export default function CollectionTaskCard({
       type="button"
       onClick={() => onOpen(task.id)}
       className={cn(
-        'w-full text-right rounded-2xl border bg-white dark:bg-gray-800 p-3.5 shadow-sm transition-all',
+        'w-full text-right rounded-2xl border border-s-4 bg-white dark:bg-gray-800 p-3.5 shadow-sm transition-all',
         'border-gray-200 dark:border-gray-700 hover:shadow-md hover:border-blue-300 dark:hover:border-blue-700',
+        COLLECTION_STATUS_STRIPE[task.status],
         task.is_archived && 'opacity-70'
       )}
     >

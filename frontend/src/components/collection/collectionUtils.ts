@@ -12,16 +12,23 @@ export const COLLECTION_STATUSES: CollectionStatus[] = ['open', 'in_progress', '
 
 /** Tailwind classes for a status chip (light + dark). */
 export const COLLECTION_STATUS_CHIP: Record<CollectionStatus, string> = {
-  open: 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-800',
+  open: 'bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-900/20 dark:text-orange-300 dark:border-orange-800',
   in_progress: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/20 dark:text-blue-300 dark:border-blue-800',
   closed: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-800',
 }
 
 /** Accent dot colour per status (column headers, summary tiles). */
 export const COLLECTION_STATUS_DOT: Record<CollectionStatus, string> = {
-  open: 'bg-amber-500',
+  open: 'bg-orange-500',
   in_progress: 'bg-blue-500',
   closed: 'bg-emerald-500',
+}
+
+/** Side stripe of a task card per status: a soft colour on the card's start (right) edge. */
+export const COLLECTION_STATUS_STRIPE: Record<CollectionStatus, string> = {
+  open: 'border-s-orange-300 hover:border-s-orange-300 dark:border-s-orange-700 dark:hover:border-s-orange-700',
+  in_progress: 'border-s-blue-300 hover:border-s-blue-300 dark:border-s-blue-700 dark:hover:border-s-blue-700',
+  closed: 'border-s-emerald-300 hover:border-s-emerald-300 dark:border-s-emerald-700 dark:hover:border-s-emerald-700',
 }
 
 export const COLLECTION_TYPE_LABELS: Record<CollectionType, string> = {
